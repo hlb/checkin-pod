@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render(path = "/", init = {}) {
+async function render(path = "/", init = {}, envOverrides = {}) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${Math.random()}`);
   const { default: worker } = await import(workerUrl.href);
@@ -14,6 +14,7 @@ async function render(path = "/", init = {}) {
     {
       ADMIN_PASSWORD: "test-password",
       ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+      ...envOverrides,
     },
     { waitUntil() {}, passThroughOnException() {} },
   );
@@ -74,6 +75,48 @@ test("password-protects the control center while keeping displays public", async
   assert.match(await wrongPassword.text(), /密碼不正確/);
 });
 
+test("logging out ends the public projection without deleting browser records", async () => {
+  const cookie = await adminCookie();
+  let deletedLiveEventId = null;
+  const database = {
+    prepare(sql) {
+      assert.match(sql, /DELETE FROM live_event_state/);
+      return {
+        bind(id) {
+          deletedLiveEventId = id;
+          return this;
+        },
+        async run() {
+          return { meta: { changes: 1 } };
+        },
+      };
+    },
+  };
+
+  const response = await render("/admin-auth/logout", {
+    method: "POST",
+    headers: { cookie },
+  }, { DB: database });
+
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get("location"), "/admin");
+  assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);
+  assert.equal(deletedLiveEventId, 1);
+});
+
+test("an unauthenticated logout request cannot clear the public projection", async () => {
+  const response = await render("/admin-auth/logout", { method: "POST" }, {
+    DB: {
+      prepare() {
+        assert.fail("the live event must not be deleted without an admin session");
+      },
+    },
+  });
+
+  assert.equal(response.status, 303);
+  assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);
+});
+
 test("wires persistence, scanner, secured projection sync, and event controls", async () => {
   const [page, scanPage, projectionPage, planetVariants, liveRoute, policy, core, auth, styles, workerSource, sampleZip, successAudio, failureAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -124,6 +167,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(auth, /HttpOnly/);
   assert.match(auth, /SameSite=Strict/);
   assert.match(workerSource, /ADMIN_PASSWORD/);
+  assert.match(workerSource, /clearPublishedLiveEvent/);
   assert.doesNotMatch(workerSource + auth, /llap55688/);
   assert.match(styles, /\.guest-screen\.has-custom-background\s*\{[^}]*background-size:\s*contain/s);
   assert.match(styles, /@keyframes planetFlyIn/);

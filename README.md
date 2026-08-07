@@ -19,7 +19,7 @@ npm run dev
 - 來賓掃描畫面：[http://localhost:3000/scan](http://localhost:3000/scan)
 - 投影能量牆：[http://localhost:3000/projection](http://localhost:3000/projection)
 
-`/` 與 `/admin` 需要輸入 `ADMIN_PASSWORD`；來賓與投影畫面維持公開。登入只保留在該瀏覽器工作階段，中控台右上角選單可手動登出。
+`/` 與 `/admin` 需要輸入 `ADMIN_PASSWORD`；來賓與投影畫面維持公開。登入只保留在該瀏覽器工作階段，中控台右上角選單可手動登出。登出會結束公開投影並讓投影牆歸零，本機的名單與報到紀錄仍會保留，之後登入即可繼續使用或匯出。
 
 管理畫面與來賓掃描畫面要使用同一台電腦上的同一個瀏覽器，才能共用完整名單。正式網站的投影能量牆可在另一台連網電腦開啟相同網域的 `/projection`；使用 localhost 開發時，則以報到電腦的區網 IP（例如 `http://192.168.1.23:3000/projection`）開啟，並確認防火牆允許 Node 接受連線。
 

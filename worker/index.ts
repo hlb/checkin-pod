@@ -38,6 +38,13 @@ function redirectToAdmin(cookie?: string) {
   return new Response(null, { status: 303, headers });
 }
 
+async function clearPublishedLiveEvent(database: D1Database) {
+  await database
+    .prepare("DELETE FROM live_event_state WHERE id = ?")
+    .bind(1)
+    .run();
+}
+
 function adminLoginPage(message = "", status = 200) {
   const error = message
     ? `<p class="error" role="alert">${message}</p>`
@@ -95,6 +102,16 @@ const worker = {
     const url = new URL(request.url);
 
     if (url.pathname === "/admin-auth/logout") {
+      if (
+        env.ADMIN_PASSWORD &&
+        (await hasValidAdminSession(request, env.ADMIN_PASSWORD))
+      ) {
+        try {
+          await clearPublishedLiveEvent(env.DB);
+        } catch {
+          return adminLoginPage("無法結束公開投影，請稍後再試。", 503);
+        }
+      }
       return redirectToAdmin(clearAdminCookie(url.protocol === "https:"));
     }
 
