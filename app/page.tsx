@@ -821,18 +821,10 @@ export default function Home() {
   };
 
   const downloadSample = () => {
-    const sample = [
-      "name,email,ticket_name,qr_code_url",
-      '王小明,ming@example.com,一般票,"https://luma.com/check-in/event?pk=demo-001"',
-      '陳美玲,mei@example.com,VIP,"https://luma.com/check-in/event?pk=demo-002"',
-    ].join("\r\n");
-    const blob = new Blob(["\uFEFF", sample], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.href = url;
-    link.download = "luma-checkin-sample.csv";
+    link.href = "/arrival-checkin-sample-150.zip";
+    link.download = "arrival-checkin-sample-150.zip";
     link.click();
-    URL.revokeObjectURL(url);
   };
 
   const replaceList = () => {
@@ -1107,7 +1099,7 @@ export default function Home() {
               {importing ? "匯入中…" : "選擇 CSV 檔案"}
             </button>
             <button className="sample-link" type="button" onClick={downloadSample}>
-              先下載欄位範例
+              先下載欄位範例（150 人 ZIP）
             </button>
             <div className="privacy-note">
               <span aria-hidden="true">⌂</span>

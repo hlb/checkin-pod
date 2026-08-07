@@ -13,9 +13,10 @@ type FloatingName = {
   scale: number;
   duration: number;
 };
-type Entrance = { key: string; attendee: LiveAttendee; delay: number };
+type Entrance = { key: string; attendee: LiveAttendee };
 
 const POLL_INTERVAL_MS = 700;
+const ARRIVAL_DISPLAY_MS = 3600;
 const PARTICLE_COLORS = ["#FFD84A", "#57E5E5", "#FF7B68", "#A89BFF", "#6EE7A1"];
 const PLANET_PALETTES = [
   ["#57E5E5", "#176E83", "#072A3B"],
@@ -46,7 +47,7 @@ function halton(index: number, base: number) {
   return value;
 }
 
-function planetStyle(attendee: LiveAttendee, index: number, entranceDelay = 0) {
+function planetStyle(attendee: LiveAttendee, index: number) {
   const hash = hashText(attendee.id);
   const palette = PLANET_PALETTES[hash % PLANET_PALETTES.length];
   let x = 5 + halton(index + 1, 2) * 90;
@@ -68,7 +69,6 @@ function planetStyle(attendee: LiveAttendee, index: number, entranceDelay = 0) {
     "--planet-duration": `${5 + ((hash >>> 24) % 7)}s`,
     "--planet-entry-x": `${entryX}vw`,
     "--planet-entry-y": `${entryY}vh`,
-    "--planet-entry-delay": `${entranceDelay}ms`,
   } as CSSProperties;
 }
 
@@ -90,7 +90,8 @@ export default function ProjectionPage() {
   const [snapshot, setSnapshot] = useState<LiveEventSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
   const [activated, setActivated] = useState(false);
-  const [entrances, setEntrances] = useState<Entrance[]>([]);
+  const [arrivalQueue, setArrivalQueue] = useState<Entrance[]>([]);
+  const [activeEntrance, setActiveEntrance] = useState<Entrance | null>(null);
   const [floatingNames, setFloatingNames] = useState<FloatingName[]>([]);
   const [cueBanner, setCueBanner] = useState("");
   const [celebrationSeed, setCelebrationSeed] = useState(0);
@@ -108,6 +109,24 @@ export default function ProjectionPage() {
     activatedRef.current = activated;
   }, [activated]);
 
+  useEffect(() => {
+    if (!activated || activeEntrance || !arrivalQueue.length) return;
+    const nextEntrance = arrivalQueue[0];
+    const timer = window.setTimeout(() => {
+      setArrivalQueue((current) =>
+        current[0]?.key === nextEntrance.key ? current.slice(1) : current,
+      );
+      setActiveEntrance((current) => current ?? nextEntrance);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activated, activeEntrance, arrivalQueue]);
+
+  useEffect(() => {
+    if (!activeEntrance) return;
+    const timer = window.setTimeout(() => setActiveEntrance(null), ARRIVAL_DISPLAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [activeEntrance]);
+
   const checkedIn = useMemo(
     () => (snapshot?.attendees ?? [])
       .filter((attendee) => attendee.checkedInAt)
@@ -115,6 +134,10 @@ export default function ProjectionPage() {
     [snapshot],
   );
   const checkedInSignature = checkedIn.map((attendee) => attendee.id).join("\u0000");
+  const queuedAttendeeIds = useMemo(
+    () => new Set(arrivalQueue.map((entrance) => entrance.attendee.id)),
+    [arrivalQueue],
+  );
   useEffect(() => {
     checkedInRef.current = checkedIn;
   }, [checkedIn]);
@@ -154,6 +177,11 @@ export default function ProjectionPage() {
   const applySnapshot = useCallback((nextSnapshot: LiveEventSnapshot | null) => {
     if (!nextSnapshot) {
       setSnapshot(null);
+      currentEventIdRef.current = "";
+      initializedRef.current = false;
+      seenAttendeesRef.current = new Set<string>();
+      setArrivalQueue([]);
+      setActiveEntrance(null);
       return;
     }
     const isNewEvent = currentEventIdRef.current !== nextSnapshot.eventId;
@@ -161,7 +189,8 @@ export default function ProjectionPage() {
       currentEventIdRef.current = nextSnapshot.eventId;
       initializedRef.current = false;
       seenAttendeesRef.current = new Set<string>();
-      setEntrances([]);
+      setArrivalQueue([]);
+      setActiveEntrance(null);
       setFloatingNames([]);
     }
 
@@ -175,18 +204,13 @@ export default function ProjectionPage() {
       newlyArrived.forEach((attendee) => seenAttendeesRef.current.add(attendee.id));
       if (newlyArrived.length) {
         const now = Date.now();
-        const nextEntrances = newlyArrived.map((attendee, index) => ({
-          key: `${attendee.id}-${now}`,
-          attendee,
-          delay: index * 450,
-        }));
-        setEntrances((current) => [...current, ...nextEntrances].slice(-6));
-        nextEntrances.forEach((entrance) => {
-          const timer = window.setTimeout(() => {
-            setEntrances((current) => current.filter((item) => item.key !== entrance.key));
-          }, 4700 + entrance.delay);
-          cleanupTimersRef.current.push(timer);
-        });
+        const nextEntrances = newlyArrived
+          .sort((left, right) => (left.checkedInAt ?? "").localeCompare(right.checkedInAt ?? ""))
+          .map((attendee) => ({
+            key: `${attendee.id}-${now}`,
+            attendee,
+          }));
+        setArrivalQueue((current) => [...current, ...nextEntrances]);
       }
       if (nextSnapshot.cue && nextSnapshot.cue.id !== lastCueIdRef.current) {
         lastCueIdRef.current = nextSnapshot.cue.id;
@@ -294,13 +318,14 @@ export default function ProjectionPage() {
           <small>PLANETS</small>
         </div>
         {checkedIn.map((attendee, index) => {
-          const entrance = entrances.find((item) => item.attendee.id === attendee.id);
+          const isArriving = activeEntrance?.attendee.id === attendee.id;
+          const isQueued = queuedAttendeeIds.has(attendee.id);
           const hasRing = hashText(attendee.id) % 4 === 0;
           return (
             <span
-              className={`energy-planet ${hasRing ? "has-ring" : ""} ${entrance ? "is-arriving" : ""}`}
+              className={`energy-planet ${hasRing ? "has-ring" : ""} ${isArriving ? "is-arriving" : isQueued ? "is-awaiting-arrival" : ""}`}
               key={attendee.id}
-              style={planetStyle(attendee, index, entrance?.delay)}
+              style={planetStyle(attendee, index)}
               title={attendee.name}
               aria-label={`${attendee.name} 的星球`}
             />
@@ -322,18 +347,23 @@ export default function ProjectionPage() {
         ))}
       </section>
 
-      {entrances.map((entrance) => (
+      {activeEntrance ? (
         <div
           className="projection-arrival"
-          key={entrance.key}
-          style={{ "--entrance-delay": `${entrance.delay}ms` } as CSSProperties}
+          key={activeEntrance.key}
           aria-live="assertive"
         >
           <span>NEW PLANET · WELCOME ABOARD</span>
-          <strong>{entrance.attendee.name}</strong>
-          <small>第 {checkedIn.findIndex((item) => item.id === entrance.attendee.id) + 1} 顆星球已加入全場能量</small>
+          <strong>{activeEntrance.attendee.name}</strong>
+          <small>第 {checkedIn.findIndex((item) => item.id === activeEntrance.attendee.id) + 1} 顆星球已加入全場能量</small>
         </div>
-      ))}
+      ) : null}
+
+      {arrivalQueue.length ? (
+        <div className="projection-arrival-queue" aria-live="polite">
+          <i /> 還有 {arrivalQueue.length} 位等待登場
+        </div>
+      ) : null}
 
       {cueBanner ? <div className="projection-cue-banner" aria-live="assertive"><i />{cueBanner}<i /></div> : null}
 

@@ -89,7 +89,7 @@ test("password-protects the control center while keeping guest displays public",
 });
 
 test("includes local persistence, Luma columns, scanner capture, and CSV export", async () => {
-  const [page, scanPage, projectionPage, liveRoute, core, layout, styles, workerSource, packageJson, sample, successAudio, failureAudio, boardingAudio, celebrationAudio] = await Promise.all([
+  const [page, scanPage, projectionPage, liveRoute, core, layout, styles, workerSource, packageJson, sample, sampleZip, successAudio, failureAudio, boardingAudio, celebrationAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/projection/page.tsx", import.meta.url), "utf8"),
@@ -100,6 +100,7 @@ test("includes local persistence, Luma columns, scanner capture, and CSV export"
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("./fixtures/luma-sample.csv", import.meta.url), "utf8"),
+    readFile(new URL("../public/arrival-checkin-sample-150.zip", import.meta.url)),
     readFile(new URL("../public/audio/checkin-success.mp3", import.meta.url)),
     readFile(new URL("../public/audio/checkin-failure.mp3", import.meta.url)),
     readFile(new URL("../public/audio/boarding-announcement.mp3", import.meta.url)),
@@ -116,6 +117,8 @@ test("includes local persistence, Luma columns, scanner capture, and CSV export"
   assert.match(page, /new Blob\(\["\\uFEFF"/);
   assert.match(page, /來賓畫面顯示內容/);
   assert.match(page, /selectedDisplayFields/);
+  assert.match(page, /\/arrival-checkin-sample-150\.zip/);
+  assert.match(page, /150 人 ZIP/);
   assert.doesNotMatch(scanPage, /請出示並掃描/);
   assert.match(scanPage, /將票券上的 QR Code 對準掃描器/);
   assert.match(scanPage, /getDisplayFields/);
@@ -158,7 +161,12 @@ test("includes local persistence, Luma columns, scanner capture, and CSV export"
   assert.match(scanPage, /DEFAULT_GUEST_BACKGROUND = "#0E0F12"/);
   assert.match(scanPage, /publishLiveEvent/);
   assert.match(projectionPage, /POLL_INTERVAL_MS = 700/);
+  assert.match(projectionPage, /ARRIVAL_DISPLAY_MS = 3600/);
   assert.match(projectionPage, /seenAttendeesRef/);
+  assert.match(projectionPage, /arrivalQueue/);
+  assert.match(projectionPage, /activeEntrance/);
+  assert.match(projectionPage, /還有 \{arrivalQueue\.length\} 位等待登場/);
+  assert.doesNotMatch(projectionPage, /slice\(-6\)/);
   assert.match(projectionPage, /projection-arrival/);
   assert.match(projectionPage, /energy-planet/);
   assert.match(projectionPage, /planetStyle/);
@@ -183,6 +191,8 @@ test("includes local persistence, Luma columns, scanner capture, and CSV export"
   assert.match(styles, /width:\s*min\(360px/);
   assert.match(styles, /\.guest-person-result\s*\{[^}]*grid-template-columns:/s);
   assert.match(styles, /\.energy-planet\.is-arriving/);
+  assert.match(styles, /\.energy-planet\.is-awaiting-arrival/);
+  assert.match(styles, /\.projection-arrival-queue/);
   assert.match(styles, /@keyframes planetFlyIn/);
   assert.doesNotMatch(projectionPage, /className="energy-particle"/);
   assert.doesNotMatch(styles, /\.guest-screen\.show-result\s*\{[^}]*background-color:/s);
@@ -202,4 +212,5 @@ test("includes local persistence, Luma columns, scanner capture, and CSV export"
   assert.match(packageJson, /vinext dev -H 0\.0\.0\.0/);
   assert.match(sample.replace(/^\uFEFF/, ""), /^guest_id,name,first_name,last_name,email,/);
   assert.match(sample, /qr_code_url/);
+  assert.ok(sampleZip.length > 10_000);
 });
