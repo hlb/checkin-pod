@@ -22,6 +22,7 @@ export type LastScan = {
 
 export type DisplaySettings = {
   selectedFields: string[];
+  /** @deprecated Background images are stored separately in IndexedDB. */
   backgroundImageDataUrl?: string;
   backgroundColor?: string;
 };
@@ -36,6 +37,15 @@ export type SavedEvent = {
   excludedRowCount?: number;
   displaySettings?: DisplaySettings;
   lastScan?: LastScan;
+  revision?: number;
+  writerToken?: string;
+};
+
+export type ScanOutcome = {
+  kind: LastScan["kind"];
+  attendee?: Attendee;
+  code?: string;
+  at: string;
 };
 
 export type ProjectionCueType = "boarding" | "celebration";
@@ -50,6 +60,7 @@ export type LiveEventSnapshot = {
   eventId: string;
   fileName: string;
   total: number;
+  revision: number;
   updatedAt: string;
   attendees: Array<Pick<Attendee, "id" | "name" | "checkedInAt">>;
   cue?: ProjectionCue;
@@ -57,9 +68,13 @@ export type LiveEventSnapshot = {
 
 export const CHANNEL_NAME = "arrival-checkin-sync";
 const DB_NAME = "arrival-checkin";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = "events";
+const ASSET_STORE_NAME = "assets";
 const CURRENT_EVENT_KEY = "current-event";
+const BACKGROUND_IMAGE_KEY = "guest-background";
+const WRITE_LOCK_NAME = "arrival-checkin-write";
+let fallbackWriteQueue: Promise<void> = Promise.resolve();
 
 const FIELD_ALIASES = {
   name: ["name", "full_name", "guest_name", "attendee_name", "姓名", "名字"],
@@ -217,6 +232,9 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
         request.result.createObjectStore(STORE_NAME);
       }
+      if (!request.result.objectStoreNames.contains(ASSET_STORE_NAME)) {
+        request.result.createObjectStore(ASSET_STORE_NAME);
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -225,39 +243,235 @@ function openDatabase(): Promise<IDBDatabase> {
 
 export async function readSavedEvent(): Promise<SavedEvent | null> {
   const database = await openDatabase();
-  return new Promise((resolve, reject) => {
+  const saved = await new Promise<SavedEvent | null>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readonly");
     const request = transaction.objectStore(STORE_NAME).get(CURRENT_EVENT_KEY);
     request.onsuccess = () => resolve((request.result as SavedEvent | undefined) ?? null);
     request.onerror = () => reject(request.error);
     transaction.oncomplete = () => database.close();
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error);
+    };
   });
+  const savedDisplaySettings = saved?.displaySettings;
+  const legacyBackground = savedDisplaySettings?.backgroundImageDataUrl;
+  if (!saved || !savedDisplaySettings || !legacyBackground) return saved;
+  await writeBackgroundImageDataUrl(legacyBackground);
+  const displaySettings: DisplaySettings = {
+    ...savedDisplaySettings,
+    selectedFields: savedDisplaySettings.selectedFields ?? defaultDisplayFields(saved.headers),
+  };
+  delete displaySettings.backgroundImageDataUrl;
+  const migrated = { ...saved, displaySettings };
+  await writeSavedEvent(migrated);
+  return migrated;
 }
 
 export async function writeSavedEvent(event: SavedEvent) {
+  const displaySettings = event.displaySettings ? { ...event.displaySettings } : undefined;
+  if (displaySettings) delete displaySettings.backgroundImageDataUrl;
+  const compactEvent = { ...event, displaySettings };
   const database = await openDatabase();
   return new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(event, CURRENT_EVENT_KEY);
+    transaction.objectStore(STORE_NAME).put(compactEvent, CURRENT_EVENT_KEY);
     transaction.oncomplete = () => {
       database.close();
       resolve();
     };
-    transaction.onerror = () => reject(transaction.error);
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error);
+    };
   });
 }
 
 export async function clearSavedEvent() {
   const database = await openDatabase();
   return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const transaction = database.transaction([STORE_NAME, ASSET_STORE_NAME], "readwrite");
     transaction.objectStore(STORE_NAME).delete(CURRENT_EVENT_KEY);
+    transaction.objectStore(ASSET_STORE_NAME).delete(BACKGROUND_IMAGE_KEY);
     transaction.oncomplete = () => {
       database.close();
       resolve();
     };
-    transaction.onerror = () => reject(transaction.error);
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error);
+    };
   });
+}
+
+export async function readBackgroundImageDataUrl(): Promise<string | null> {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(ASSET_STORE_NAME, "readonly");
+    const request = transaction.objectStore(ASSET_STORE_NAME).get(BACKGROUND_IMAGE_KEY);
+    request.onsuccess = () => resolve(typeof request.result === "string" ? request.result : null);
+    request.onerror = () => reject(request.error);
+    transaction.oncomplete = () => database.close();
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error);
+    };
+  });
+}
+
+export async function writeBackgroundImageDataUrl(value: string | null) {
+  const database = await openDatabase();
+  return new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(ASSET_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(ASSET_STORE_NAME);
+    if (value) store.put(value, BACKGROUND_IMAGE_KEY);
+    else store.delete(BACKGROUND_IMAGE_KEY);
+    transaction.oncomplete = () => {
+      database.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      database.close();
+      reject(transaction.error);
+    };
+  });
+}
+
+async function withEventWriteLock<T>(work: () => Promise<T>): Promise<T> {
+  if (typeof navigator !== "undefined" && navigator.locks?.request) {
+    return navigator.locks.request(WRITE_LOCK_NAME, work);
+  }
+  const result = fallbackWriteQueue.then(work, work);
+  fallbackWriteQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export function applyScanToEvent(
+  event: SavedEvent,
+  rawCode: string,
+  scannedAt = new Date().toISOString(),
+): { event: SavedEvent; outcome: ScanOutcome } {
+  const code = rawCode.trim().replace(/[\r\n]+$/g, "");
+  const keys = scanKeysFor(code);
+  const candidates = event.attendees.filter((attendee) =>
+    attendee.scanKeys.some((key) => keys.includes(key)),
+  );
+  const revision = (event.revision ?? 0) + 1;
+  if (!candidates.length) {
+    return {
+      event: { ...event, revision, lastScan: { kind: "unknown", code, at: scannedAt } },
+      outcome: { kind: "unknown", code, at: scannedAt },
+    };
+  }
+  const attendee = candidates.find((candidate) => !candidate.checkedInAt) ?? candidates[0];
+  if (attendee.checkedInAt) {
+    return {
+      event: {
+        ...event,
+        revision,
+        lastScan: { kind: "duplicate", attendeeId: attendee.id, at: scannedAt },
+      },
+      outcome: { kind: "duplicate", attendee, at: scannedAt },
+    };
+  }
+  const checkedAttendee = { ...attendee, checkedInAt: scannedAt };
+  return {
+    event: {
+      ...event,
+      revision,
+      lastScan: { kind: "success", attendeeId: attendee.id, at: scannedAt },
+      attendees: event.attendees.map((item) =>
+        item.id === attendee.id ? checkedAttendee : item,
+      ),
+    },
+    outcome: { kind: "success", attendee: checkedAttendee, at: scannedAt },
+  };
+}
+
+export async function replaceSavedEvent(event: SavedEvent) {
+  const prepared = {
+    ...event,
+    revision: Math.max(1, event.revision ?? 0),
+    writerToken: event.writerToken || crypto.randomUUID(),
+  };
+  await withEventWriteLock(() => writeSavedEvent(prepared));
+  broadcastEventChange();
+  const projectionSync = publishLiveEvent(prepared).then(() => true, () => false);
+  return { event: prepared, projectionSync };
+}
+
+export async function ensureSavedEventWriterToken() {
+  const prepared = await withEventWriteLock(async () => {
+    const current = await readSavedEvent();
+    if (!current) return null;
+    if (current.writerToken) return current;
+    const next = {
+      ...current,
+      revision: (current.revision ?? 0) + 1,
+      writerToken: crypto.randomUUID(),
+    };
+    await writeSavedEvent(next);
+    return next;
+  });
+  if (!prepared) return null;
+  broadcastEventChange();
+  await publishLiveEvent(prepared);
+  return prepared;
+}
+
+export async function mutateSavedEvent(
+  mutate: (event: SavedEvent) => SavedEvent,
+  publish = false,
+) {
+  const updated = await withEventWriteLock(async () => {
+    const current = await readSavedEvent();
+    if (!current) throw new Error("找不到目前的活動名單，請重新匯入 CSV。");
+    const next = mutate(current);
+    const normalized = { ...next, revision: (current.revision ?? 0) + 1 };
+    await writeSavedEvent(normalized);
+    return normalized;
+  });
+  broadcastEventChange();
+  if (publish) await publishLiveEvent(updated);
+  return updated;
+}
+
+export async function commitScan(rawCode: string, scannedAt = new Date().toISOString()) {
+  const committed = await withEventWriteLock(async () => {
+    const current = await readSavedEvent();
+    if (!current) throw new Error("找不到目前的活動名單，請洽報到人員。");
+    const next = applyScanToEvent(current, rawCode, scannedAt);
+    await writeSavedEvent(next.event);
+    return next;
+  });
+  broadcastEventChange();
+  const projectionSync = publishLiveEvent(committed.event).then(() => true, () => false);
+  return { ...committed, projectionSync };
+}
+
+export async function commitAttendeeCheckIn(attendeeId: string, checkedInAt: string | null) {
+  const committed = await withEventWriteLock(async () => {
+    const current = await readSavedEvent();
+    if (!current) throw new Error("找不到目前的活動名單，請重新匯入 CSV。");
+    const attendee = current.attendees.find((item) => item.id === attendeeId);
+    if (!attendee) throw new Error("找不到這位來賓。");
+    const updatedAttendee = { ...attendee, checkedInAt };
+    const next: SavedEvent = {
+      ...current,
+      revision: (current.revision ?? 0) + 1,
+      lastScan: checkedInAt
+        ? { kind: "success", attendeeId, at: checkedInAt }
+        : current.lastScan?.attendeeId === attendeeId
+          ? undefined
+          : current.lastScan,
+      attendees: current.attendees.map((item) => item.id === attendeeId ? updatedAttendee : item),
+    };
+    await writeSavedEvent(next);
+    return { event: next, attendee: updatedAttendee };
+  });
+  broadcastEventChange();
+  const projectionSync = publishLiveEvent(committed.event).then(() => true, () => false);
+  return { ...committed, projectionSync };
 }
 
 export function broadcastEventChange() {
@@ -272,6 +486,7 @@ export function liveSnapshotFromEvent(event: SavedEvent): LiveEventSnapshot {
     eventId: event.importedAt,
     fileName: event.fileName,
     total: event.attendees.length,
+    revision: event.revision ?? 0,
     updatedAt: new Date().toISOString(),
     attendees: event.attendees
       .filter((attendee) => attendee.checkedInAt)
@@ -282,7 +497,10 @@ export function liveSnapshotFromEvent(event: SavedEvent): LiveEventSnapshot {
 export async function publishLiveEvent(event: SavedEvent) {
   const response = await fetch("/api/live-event", {
     method: "PUT",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(event.writerToken ? { "x-event-writer-token": event.writerToken } : {}),
+    },
     body: JSON.stringify(liveSnapshotFromEvent(event)),
   });
   if (!response.ok) throw new Error("無法同步投影牆資料。");

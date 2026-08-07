@@ -99,10 +99,11 @@ export default function ProjectionPage() {
   const currentEventIdRef = useRef("");
   const initializedRef = useRef(false);
   const lastCueIdRef = useRef("");
+  const pendingCueRef = useRef<ProjectionCue | null>(null);
   const activatedRef = useRef(false);
   const boardingAudioRef = useRef<HTMLAudioElement | null>(null);
   const celebrationAudioRef = useRef<HTMLAudioElement | null>(null);
-  const cleanupTimersRef = useRef<number[]>([]);
+  const cleanupTimersRef = useRef(new Set<number>());
   const checkedInRef = useRef<LiveAttendee[]>([]);
 
   useEffect(() => {
@@ -144,6 +145,15 @@ export default function ProjectionPage() {
   const total = snapshot?.total ?? 0;
   const rate = total ? Math.round((checkedIn.length / total) * 100) : 0;
 
+  const scheduleCleanup = useCallback((callback: () => void, delay: number) => {
+    const timer = window.setTimeout(() => {
+      cleanupTimersRef.current.delete(timer);
+      callback();
+    }, delay);
+    cleanupTimersRef.current.add(timer);
+    return timer;
+  }, []);
+
   const handleCue = useCallback((cue: ProjectionCue) => {
     if (!activatedRef.current) return;
     if (cue.type === "boarding") {
@@ -154,8 +164,7 @@ export default function ProjectionPage() {
         sound.currentTime = 0;
         void sound.play().catch(() => setCueBanner("請點一下畫面後再播放廣播"));
       }
-      const timer = window.setTimeout(() => setCueBanner(""), 9000);
-      cleanupTimersRef.current.push(timer);
+      scheduleCleanup(() => setCueBanner(""), 9000);
       return;
     }
 
@@ -167,12 +176,11 @@ export default function ProjectionPage() {
       sound.currentTime = 0;
       void sound.play().catch(() => setCueBanner("全場能量已解鎖"));
     }
-    const timer = window.setTimeout(() => {
+    scheduleCleanup(() => {
       setCueBanner("");
       setCelebrationSeed(0);
     }, 5200);
-    cleanupTimersRef.current.push(timer);
-  }, []);
+  }, [scheduleCleanup]);
 
   const applySnapshot = useCallback((nextSnapshot: LiveEventSnapshot | null) => {
     if (!nextSnapshot) {
@@ -180,6 +188,7 @@ export default function ProjectionPage() {
       currentEventIdRef.current = "";
       initializedRef.current = false;
       seenAttendeesRef.current = new Set<string>();
+      pendingCueRef.current = null;
       setArrivalQueue([]);
       setActiveEntrance(null);
       return;
@@ -189,6 +198,7 @@ export default function ProjectionPage() {
       currentEventIdRef.current = nextSnapshot.eventId;
       initializedRef.current = false;
       seenAttendeesRef.current = new Set<string>();
+      pendingCueRef.current = null;
       setArrivalQueue([]);
       setActiveEntrance(null);
       setFloatingNames([]);
@@ -198,6 +208,7 @@ export default function ProjectionPage() {
     if (!initializedRef.current) {
       arrived.forEach((attendee) => seenAttendeesRef.current.add(attendee.id));
       lastCueIdRef.current = nextSnapshot.cue?.id ?? "";
+      if (nextSnapshot.cue && !activatedRef.current) pendingCueRef.current = nextSnapshot.cue;
       initializedRef.current = true;
     } else {
       const newlyArrived = arrived.filter((attendee) => !seenAttendeesRef.current.has(attendee.id));
@@ -214,7 +225,8 @@ export default function ProjectionPage() {
       }
       if (nextSnapshot.cue && nextSnapshot.cue.id !== lastCueIdRef.current) {
         lastCueIdRef.current = nextSnapshot.cue.id;
-        handleCue(nextSnapshot.cue);
+        if (activatedRef.current) handleCue(nextSnapshot.cue);
+        else pendingCueRef.current = nextSnapshot.cue;
       }
     }
     setSnapshot(nextSnapshot);
@@ -249,6 +261,7 @@ export default function ProjectionPage() {
       disposed = true;
       window.clearInterval(interval);
       cleanupTimers.forEach((timer) => window.clearTimeout(timer));
+      cleanupTimers.clear();
       boardingAudio.pause();
       celebrationAudio.pause();
       boardingAudioRef.current = null;
@@ -272,15 +285,14 @@ export default function ProjectionPage() {
         duration: 5 + Math.random() * 3,
       };
       setFloatingNames((current) => [...current.slice(-7), floating]);
-      const timer = window.setTimeout(() => {
+      scheduleCleanup(() => {
         setFloatingNames((current) => current.filter((item) => item.key !== key));
       }, floating.duration * 1000);
-      cleanupTimersRef.current.push(timer);
     };
     spawnName();
     const interval = window.setInterval(spawnName, 1650);
     return () => window.clearInterval(interval);
-  }, [activated, checkedInSignature]);
+  }, [activated, checkedInSignature, scheduleCleanup]);
 
   const activateProjection = async () => {
     for (const sound of [boardingAudioRef.current, celebrationAudioRef.current]) {
@@ -291,7 +303,13 @@ export default function ProjectionPage() {
       sound.currentTime = 0;
       sound.muted = false;
     }
+    activatedRef.current = true;
     setActivated(true);
+    if (pendingCueRef.current) {
+      const pendingCue = pendingCueRef.current;
+      pendingCueRef.current = null;
+      handleCue(pendingCue);
+    }
     void document.documentElement.requestFullscreen?.().catch(() => undefined);
   };
 

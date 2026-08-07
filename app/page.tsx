@@ -11,47 +11,31 @@ import {
 } from "react";
 import type { CSSProperties } from "react";
 import {
+  Attendee,
+  CHANNEL_NAME,
+  SavedEvent,
+  broadcastEventChange,
+  clearSavedEvent,
   clearLiveEvent,
-  publishLiveEvent,
+  commitAttendeeCheckIn,
+  commitScan,
+  compactDate,
+  csvEscape,
+  defaultDisplayFields,
+  ensureSavedEventWriterToken,
+  formatTime,
+  mutateSavedEvent,
+  normalizeHeader,
+  parseCsv,
   publishProjectionCue,
+  readBackgroundImageDataUrl,
+  readSavedEvent,
+  replaceSavedEvent,
+  scanKeysFor,
+  toAttendees,
+  writeBackgroundImageDataUrl,
 } from "./checkin-core";
 import type { ProjectionCueType } from "./checkin-core";
-
-type OriginalRow = Record<string, string>;
-
-type Attendee = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  ticket: string;
-  approvalStatus: string;
-  qrValue: string;
-  scanKeys: string[];
-  checkedInAt: string | null;
-  original: OriginalRow;
-};
-
-type SavedEvent = {
-  version: 1;
-  fileName: string;
-  importedAt: string;
-  headers: string[];
-  attendees: Attendee[];
-  sourceRowCount?: number;
-  excludedRowCount?: number;
-  displaySettings?: {
-    selectedFields: string[];
-    backgroundImageDataUrl?: string;
-    backgroundColor?: string;
-  };
-  lastScan?: {
-    kind: "success" | "duplicate" | "unknown";
-    attendeeId?: string;
-    code?: string;
-    at: string;
-  };
-};
 
 type ScanResult =
   | { kind: "success"; attendee: Attendee; message: string }
@@ -61,11 +45,6 @@ type ScanResult =
 
 type Filter = "all" | "pending" | "arrived";
 
-const DB_NAME = "arrival-checkin";
-const DB_VERSION = 1;
-const STORE_NAME = "events";
-const CURRENT_EVENT_KEY = "current-event";
-const CHANNEL_NAME = "arrival-checkin-sync";
 const MAX_ATTENDEES = 200;
 const MAX_BACKGROUND_FILE_SIZE = 15 * 1024 * 1024;
 const MAX_BACKGROUND_WIDTH = 2560;
@@ -168,253 +147,6 @@ function buildArrivalChart(attendees: Attendee[]): ArrivalChart {
   };
 }
 
-const FIELD_ALIASES = {
-  name: ["name", "full_name", "guest_name", "attendee_name", "姓名", "名字"],
-  firstName: ["first_name", "firstname", "given_name", "名"],
-  lastName: ["last_name", "lastname", "family_name", "姓"],
-  email: ["email", "email_address", "guest_email", "電子郵件", "信箱"],
-  phone: ["phone", "phone_number", "mobile", "mobile_phone", "電話", "手機"],
-  ticket: ["ticket_name", "ticket_type", "ticket", "票種", "票券"],
-  approval: ["approval_status", "status", "guest_status", "報名狀態"],
-  qr: [
-    "qr_code_url",
-    "qrcode_url",
-    "qr_url",
-    "qr_code",
-    "qrcode",
-    "check_in_url",
-    "checkin_url",
-    "ticket_key",
-    "qr",
-    "報到碼",
-  ],
-  checkedAt: [
-    "checked_in_at",
-    "check_in_at",
-    "checkin_at",
-    "check_in_time",
-    "報到時間",
-  ],
-  checked: ["checked_in", "check_in_status", "checkin_status", "已報到"],
-  ticketId: ["ticket_api_id", "ticket_id", "guest_api_id", "guest_id", "id"],
-} as const;
-
-function normalizeHeader(value: string) {
-  return value
-    .replace(/^\uFEFF/, "")
-    .trim()
-    .toLowerCase()
-    .replace(/[\s\-/]+/g, "_")
-    .replace(/[()]/g, "");
-}
-
-function parseCsv(source: string): { headers: string[]; rows: OriginalRow[] } {
-  const matrix: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let quoted = false;
-
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    const next = source[index + 1];
-
-    if (quoted) {
-      if (char === '"' && next === '"') {
-        cell += '"';
-        index += 1;
-      } else if (char === '"') {
-        quoted = false;
-      } else {
-        cell += char;
-      }
-      continue;
-    }
-
-    if (char === '"' && cell.length === 0) {
-      quoted = true;
-    } else if (char === ",") {
-      row.push(cell);
-      cell = "";
-    } else if (char === "\n" || char === "\r") {
-      if (char === "\r" && next === "\n") index += 1;
-      row.push(cell);
-      if (row.some((value) => value.trim() !== "")) matrix.push(row);
-      row = [];
-      cell = "";
-    } else {
-      cell += char;
-    }
-  }
-
-  if (quoted) throw new Error("CSV 中有未關閉的引號，請確認檔案是否完整。");
-  row.push(cell);
-  if (row.some((value) => value.trim() !== "")) matrix.push(row);
-  if (matrix.length < 2) throw new Error("CSV 需要有標題列與至少一筆報名資料。");
-
-  const headers = matrix[0].map((header, index) => {
-    const clean = header.replace(/^\uFEFF/, "").trim();
-    return clean || `column_${index + 1}`;
-  });
-
-  const rows = matrix.slice(1).map((values) =>
-    Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ""])),
-  );
-
-  return { headers, rows };
-}
-
-function getField(row: OriginalRow, aliases: readonly string[]) {
-  const entries = Object.entries(row);
-  for (const alias of aliases) {
-    const match = entries.find(([header]) => normalizeHeader(header) === alias);
-    if (match && match[1].trim()) return match[1].trim();
-  }
-  return "";
-}
-
-function scanKeysFor(rawValue: string) {
-  const raw = rawValue.trim().replace(/[\r\n]+$/g, "");
-  if (!raw) return [];
-  const keys = new Set<string>([raw.toLowerCase(), raw.replace(/\/$/, "").toLowerCase()]);
-
-  try {
-    const url = new URL(raw);
-    const pk = url.searchParams.get("pk");
-    if (pk) keys.add(pk.toLowerCase());
-  } catch {
-    const pkMatch = raw.match(/[?&]pk=([^&#]+)/i);
-    if (pkMatch) {
-      try {
-        keys.add(decodeURIComponent(pkMatch[1]).toLowerCase());
-      } catch {
-        keys.add(pkMatch[1].toLowerCase());
-      }
-    }
-  }
-
-  return [...keys];
-}
-
-function looksChecked(value: string) {
-  return ["true", "yes", "y", "1", "checked", "checked_in", "已報到"].includes(
-    value.trim().toLowerCase(),
-  );
-}
-
-function toAttendees(rows: OriginalRow[], importedAt: string): Attendee[] {
-  return rows.map((original, index) => {
-    const firstName = getField(original, FIELD_ALIASES.firstName);
-    const lastName = getField(original, FIELD_ALIASES.lastName);
-    const name =
-      getField(original, FIELD_ALIASES.name) ||
-      [firstName, lastName].filter(Boolean).join(" ") ||
-      `未命名來賓 ${index + 1}`;
-    const email = getField(original, FIELD_ALIASES.email);
-    const qrValue = getField(original, FIELD_ALIASES.qr);
-    const checkedAt = getField(original, FIELD_ALIASES.checkedAt);
-    const checkedValue = getField(original, FIELD_ALIASES.checked);
-    const externalId = getField(original, FIELD_ALIASES.ticketId);
-    const scanKeys = new Set(scanKeysFor(qrValue));
-    if (email) scanKeys.add(email.toLowerCase());
-    if (externalId) scanKeys.add(externalId.toLowerCase());
-
-    return {
-      id: `${externalId || qrValue || email || "guest"}-${index}`,
-      name,
-      email,
-      phone: getField(original, FIELD_ALIASES.phone),
-      ticket: getField(original, FIELD_ALIASES.ticket) || "一般票",
-      approvalStatus: getField(original, FIELD_ALIASES.approval),
-      qrValue,
-      scanKeys: [...scanKeys],
-      checkedInAt: checkedAt || (looksChecked(checkedValue) ? importedAt : null),
-      original,
-    };
-  });
-}
-
-function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE_NAME)) {
-        request.result.createObjectStore(STORE_NAME);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function readSavedEvent(): Promise<SavedEvent | null> {
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readonly");
-    const request = transaction.objectStore(STORE_NAME).get(CURRENT_EVENT_KEY);
-    request.onsuccess = () => resolve((request.result as SavedEvent | undefined) ?? null);
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => database.close();
-  });
-}
-
-async function writeSavedEvent(event: SavedEvent) {
-  const database = await openDatabase();
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(event, CURRENT_EVENT_KEY);
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => reject(transaction.error);
-  });
-}
-
-async function clearSavedEvent() {
-  const database = await openDatabase();
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).delete(CURRENT_EVENT_KEY);
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => reject(transaction.error);
-  });
-}
-
-function csvEscape(value: string) {
-  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
-
-function formatTime(value: string | null, includeDate = false) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("zh-TW", {
-    ...(includeDate ? { year: "numeric", month: "2-digit", day: "2-digit" } : {}),
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(date);
-}
-
-function compactDate(value: Date) {
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  })
-    .format(value)
-    .replace(" ", "-")
-    .replace(":", "");
-  return parts;
-}
-
 async function prepareBackgroundImage(file: File) {
   if (!BACKGROUND_IMAGE_TYPES.has(file.type)) {
     throw new Error("背景圖只支援 JPG、PNG 或 WebP 格式。");
@@ -454,21 +186,6 @@ async function prepareBackgroundImage(file: File) {
   }
 }
 
-function broadcastEventChange() {
-  if (typeof BroadcastChannel === "undefined") return;
-  const channel = new BroadcastChannel(CHANNEL_NAME);
-  channel.postMessage({ type: "event-changed", at: Date.now() });
-  channel.close();
-}
-
-function defaultDisplayFields(headers: string[]) {
-  const preferred = ["name", "ticket_name", "email"];
-  const selected = preferred
-    .map((wanted) => headers.find((header) => normalizeHeader(header) === wanted))
-    .filter((header): header is string => Boolean(header));
-  return selected.length ? selected : headers.slice(0, 2);
-}
-
 function resultFromSavedEvent(saved: SavedEvent | null): ScanResult | null {
   if (!saved?.lastScan) return null;
   const attendee = saved.lastScan.attendeeId
@@ -484,11 +201,12 @@ function resultFromSavedEvent(saved: SavedEvent | null): ScanResult | null {
   if (!attendee) return null;
   return saved.lastScan.kind === "success"
     ? { kind: "success", attendee, message: `${attendee.name} 報到成功` }
-    : { kind: "duplicate", attendee, message: `${attendee.name} 已經報到過了` };
+    : { kind: "duplicate", attendee, message: `${attendee.name} 已報到過` };
 }
 
 export default function Home() {
   const [event, setEvent] = useState<SavedEvent | null>(null);
+  const [backgroundImageDataUrl, setBackgroundImageDataUrl] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -510,14 +228,27 @@ export default function Home() {
   const scannerIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    readSavedEvent()
-      .then((saved) => {
-        setEvent(saved);
-        setScanResult(resultFromSavedEvent(saved));
-        if (saved) void publishLiveEvent(saved).catch(() => undefined);
-      })
-      .catch(() => setError("無法讀取瀏覽器中的報到紀錄，請確認不是使用私密瀏覽模式。"))
-      .finally(() => setReady(true));
+    const load = async () => {
+      try {
+        const saved = await readSavedEvent();
+        let prepared = saved;
+        if (saved) {
+          try {
+            prepared = await ensureSavedEventWriterToken();
+          } catch {
+            setError("名單已從瀏覽器載入，但投影牆暫時無法同步。");
+          }
+        }
+        setEvent(prepared);
+        setScanResult(resultFromSavedEvent(prepared));
+        setBackgroundImageDataUrl(await readBackgroundImageDataUrl());
+      } catch {
+        setError("無法讀取瀏覽器中的報到紀錄，請確認不是使用私密瀏覽模式。");
+      } finally {
+        setReady(true);
+      }
+    };
+    void load();
   }, []);
 
   useEffect(() => {
@@ -525,10 +256,11 @@ export default function Home() {
     const channel = new BroadcastChannel(CHANNEL_NAME);
     channel.onmessage = () => {
       readSavedEvent()
-        .then((saved) => {
+        .then(async (saved) => {
           setEvent(saved);
           setScanResult(resultFromSavedEvent(saved));
           setLastInputAt(saved?.lastScan?.at ?? null);
+          setBackgroundImageDataUrl(await readBackgroundImageDataUrl());
         })
         .catch(() => setError("來賓畫面有新資料，但管理畫面暫時無法同步。"));
     };
@@ -541,85 +273,32 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [ready, event]);
 
-  const persist = useCallback(async (nextEvent: SavedEvent) => {
-    setEvent(nextEvent);
-    try {
-      await writeSavedEvent(nextEvent);
-      broadcastEventChange();
-      void publishLiveEvent(nextEvent).catch(() => {
-        setError("報到紀錄已保存在瀏覽器，但投影牆暫時無法同步。");
-      });
-    } catch {
-      setError("畫面已更新，但無法寫入瀏覽器儲存空間；請立即匯出備份。 ");
-    }
-  }, []);
-
   const handleScan = useCallback(
-    (rawCode: string) => {
+    async (rawCode: string) => {
       if (!event) return;
       const code = rawCode.trim().replace(/[\r\n]+$/g, "");
       if (!code) return;
-      const keys = scanKeysFor(code);
-      const candidates = event.attendees.filter((attendee) =>
-        attendee.scanKeys.some((key) => keys.includes(key)),
-      );
-
-      setLastInputAt(new Date().toISOString());
+      const scannedAt = new Date().toISOString();
+      setLastInputAt(scannedAt);
       setScanText("");
-
-      if (candidates.length === 0) {
-        const nextEvent = {
-          ...event,
-          lastScan: { kind: "unknown" as const, code, at: new Date().toISOString() },
-        };
-        void persist(nextEvent);
-        setScanResult({
-          kind: "unknown",
-          code,
-          message: "名單中找不到這組 QR Code",
-        });
-        window.setTimeout(() => scanInputRef.current?.focus(), 0);
-        return;
+      try {
+        const committed = await commitScan(code, scannedAt);
+        setEvent(committed.event);
+        const attendee = committed.outcome.attendee;
+        setScanResult(committed.outcome.kind === "unknown"
+          ? { kind: "unknown", code, message: "名單中找不到這組 QR Code" }
+          : committed.outcome.kind === "duplicate"
+            ? { kind: "duplicate", attendee: attendee!, message: `${attendee!.name} 已報到過` }
+            : { kind: "success", attendee: attendee!, message: `${attendee!.name} 報到成功` });
+        if (!(await committed.projectionSync)) {
+          setError("報到紀錄已保存在瀏覽器，但投影牆暫時無法同步。");
+        }
+      } catch {
+        setError("無法保存報到紀錄，請立即匯出備份。");
       }
-
-      const attendee = candidates.find((candidate) => !candidate.checkedInAt) ?? candidates[0];
-      if (attendee.checkedInAt) {
-        const nextEvent = {
-          ...event,
-          lastScan: {
-            kind: "duplicate" as const,
-            attendeeId: attendee.id,
-            at: new Date().toISOString(),
-          },
-        };
-        void persist(nextEvent);
-        setScanResult({
-          kind: "duplicate",
-          attendee,
-          message: `${attendee.name} 已經報到過了`,
-        });
-        window.setTimeout(() => scanInputRef.current?.focus(), 0);
-        return;
-      }
-
-      const checkedInAt = new Date().toISOString();
-      const checkedAttendee = { ...attendee, checkedInAt };
-      const nextEvent = {
-        ...event,
-        lastScan: { kind: "success" as const, attendeeId: attendee.id, at: checkedInAt },
-        attendees: event.attendees.map((item) =>
-          item.id === attendee.id ? checkedAttendee : item,
-        ),
-      };
-      void persist(nextEvent);
-      setScanResult({
-        kind: "success",
-        attendee: checkedAttendee,
-        message: `${attendee.name} 報到成功`,
-      });
       window.setTimeout(() => scanInputRef.current?.focus(), 0);
     },
-    [event, persist],
+    [event],
   );
 
   useEffect(() => {
@@ -733,7 +412,13 @@ export default function Home() {
           excludedRowCount: rows.length - attendees.length,
           displaySettings: { selectedFields: defaultDisplayFields(headers) },
         };
-        await persist(nextEvent);
+        await writeBackgroundImageDataUrl(null);
+        const committed = await replaceSavedEvent(nextEvent);
+        setEvent(committed.event);
+        setBackgroundImageDataUrl(null);
+        if (!(await committed.projectionSync)) {
+          setError("名單已保存，但投影牆暫時無法同步。");
+        }
         setScanResult(null);
         setFilter("all");
         setSearch("");
@@ -745,7 +430,7 @@ export default function Home() {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
-    [event, persist],
+    [event],
   );
 
   const handleFileChange = (changeEvent: ChangeEvent<HTMLInputElement>) => {
@@ -760,27 +445,24 @@ export default function Home() {
     if (file) void importFile(file);
   };
 
-  const toggleCheckIn = (attendee: Attendee) => {
+  const toggleCheckIn = async (attendee: Attendee) => {
     if (!event) return;
     const checkedInAt = attendee.checkedInAt ? null : new Date().toISOString();
-    const updated = { ...attendee, checkedInAt };
-    const lastScan = checkedInAt
-      ? { kind: "success" as const, attendeeId: attendee.id, at: checkedInAt }
-      : event.lastScan?.attendeeId === attendee.id
-        ? undefined
-        : event.lastScan;
-    const nextEvent = {
-      ...event,
-      lastScan,
-      attendees: event.attendees.map((item) => (item.id === attendee.id ? updated : item)),
-    };
-    void persist(nextEvent);
-    if (checkedInAt) setLastInputAt(checkedInAt);
-    setScanResult(
-      checkedInAt
-        ? { kind: "success", attendee: updated, message: `${attendee.name} 手動報到成功` }
-        : { kind: "undone", attendee: updated, message: `已取消 ${attendee.name} 的報到` },
-    );
+    try {
+      const committed = await commitAttendeeCheckIn(attendee.id, checkedInAt);
+      setEvent(committed.event);
+      if (checkedInAt) setLastInputAt(checkedInAt);
+      setScanResult(
+        checkedInAt
+          ? { kind: "success", attendee: committed.attendee, message: `${attendee.name} 手動報到成功` }
+          : { kind: "undone", attendee: committed.attendee, message: `已取消 ${attendee.name} 的報到` },
+      );
+      if (!(await committed.projectionSync)) {
+        setError("報到紀錄已保存在瀏覽器，但投影牆暫時無法同步。");
+      }
+    } catch {
+      setError("無法保存手動報到狀態，請再試一次。");
+    }
     window.setTimeout(() => scanInputRef.current?.focus(), 0);
   };
 
@@ -840,6 +522,7 @@ export default function Home() {
     await clearLiveEvent().catch(() => undefined);
     broadcastEventChange();
     setEvent(null);
+    setBackgroundImageDataUrl(null);
     setScanResult(null);
     setSearch("");
     setFilter("all");
@@ -872,10 +555,10 @@ export default function Home() {
     const selectedFields = isSelected
       ? selectedDisplayFields.filter((item) => item !== field)
       : [...selectedDisplayFields, field];
-    void persist({
-      ...event,
-      displaySettings: { ...event.displaySettings, selectedFields },
-    });
+    void mutateSavedEvent((current) => ({
+      ...current,
+      displaySettings: { ...current.displaySettings, selectedFields },
+    })).then(setEvent).catch(() => setError("無法保存來賓畫面欄位設定。"));
   };
 
   const handleBackgroundChange = async (changeEvent: ChangeEvent<HTMLInputElement>) => {
@@ -886,18 +569,9 @@ export default function Home() {
     setBackgroundUploading(true);
     try {
       const backgroundImageDataUrl = await prepareBackgroundImage(file);
-      const latestEvent = await readSavedEvent();
-      if (!latestEvent) throw new Error("找不到目前的活動名單，請重新匯入 CSV。");
-      const selectedFields =
-        latestEvent.displaySettings?.selectedFields ?? defaultDisplayFields(latestEvent.headers);
-      await persist({
-        ...latestEvent,
-        displaySettings: {
-          ...latestEvent.displaySettings,
-          selectedFields,
-          backgroundImageDataUrl,
-        },
-      });
+      await writeBackgroundImageDataUrl(backgroundImageDataUrl);
+      setBackgroundImageDataUrl(backgroundImageDataUrl);
+      broadcastEventChange();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "無法設定這張背景圖。");
     } finally {
@@ -908,28 +582,26 @@ export default function Home() {
   };
 
   const removeBackground = () => {
-    if (!event?.displaySettings?.backgroundImageDataUrl) return;
-    void persist({
-      ...event,
-      displaySettings: {
-        ...event.displaySettings,
-        selectedFields: selectedDisplayFields,
-        backgroundImageDataUrl: undefined,
-      },
-    });
+    if (!backgroundImageDataUrl) return;
+    void writeBackgroundImageDataUrl(null)
+      .then(() => {
+        setBackgroundImageDataUrl(null);
+        broadcastEventChange();
+      })
+      .catch(() => setError("無法移除背景圖。"));
     window.setTimeout(() => scanInputRef.current?.focus(), 0);
   };
 
   const updateBackgroundColor = (backgroundColor: string) => {
     if (!event || !/^#[0-9a-f]{6}$/i.test(backgroundColor)) return;
-    void persist({
-      ...event,
+    void mutateSavedEvent((current) => ({
+      ...current,
       displaySettings: {
-        ...event.displaySettings,
+        ...current.displaySettings,
         selectedFields: selectedDisplayFields,
         backgroundColor,
       },
-    });
+    })).then(setEvent).catch(() => setError("無法保存背景底色。"));
   };
 
   const arrived = event?.attendees.filter((attendee) => attendee.checkedInAt).length ?? 0;
@@ -1103,7 +775,7 @@ export default function Home() {
             </button>
             <div className="privacy-note">
               <span aria-hidden="true">⌂</span>
-              <p><strong>不使用雲端服務</strong><br />只在本機保存，並可同步到同一區網的投影牆</p>
+              <p><strong>完整名單只存在本機</strong><br />投影同步僅傳姓名、報到時間、總人數與控制指令</p>
             </div>
           </div>
         </section>
@@ -1152,7 +824,7 @@ export default function Home() {
               </button>
               <a href="/projection" target="_blank" rel="noreferrer">
                 <span aria-hidden="true">↗</span>
-                <div><strong>開啟投影牆</strong><small>投影電腦以區網網址開啟</small></div>
+                <div><strong>開啟投影牆</strong><small>投影電腦以相同網站網址開啟</small></div>
               </a>
             </div>
 
@@ -1316,16 +988,16 @@ export default function Home() {
             </details>
             <div className="background-settings">
               <div
-                className={`background-preview ${event.displaySettings?.backgroundImageDataUrl ? "has-image" : ""}`}
+                className={`background-preview ${backgroundImageDataUrl ? "has-image" : ""}`}
                 style={{
                   backgroundColor: event.displaySettings?.backgroundColor ?? DEFAULT_GUEST_BACKGROUND,
-                  ...(event.displaySettings?.backgroundImageDataUrl
-                    ? { backgroundImage: `url("${event.displaySettings.backgroundImageDataUrl}")` }
+                  ...(backgroundImageDataUrl
+                    ? { backgroundImage: `url("${backgroundImageDataUrl}")` }
                     : {}),
                 }}
                 aria-hidden="true"
               >
-                {!event.displaySettings?.backgroundImageDataUrl ? <span>預設底色</span> : null}
+                {!backgroundImageDataUrl ? <span>預設底色</span> : null}
               </div>
               <div className="background-settings-copy">
                 <strong>來賓畫面背景</strong>
@@ -1350,11 +1022,11 @@ export default function Home() {
                 >
                   {backgroundUploading
                     ? "處理圖片中…"
-                    : event.displaySettings?.backgroundImageDataUrl
+                    : backgroundImageDataUrl
                       ? "更換背景"
                       : "上傳背景圖"}
                 </button>
-                {event.displaySettings?.backgroundImageDataUrl ? (
+                {backgroundImageDataUrl ? (
                   <button type="button" className="background-remove-button" onClick={removeBackground}>
                     移除
                   </button>

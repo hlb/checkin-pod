@@ -1,6 +1,14 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import {
+  adminCookie,
+  adminSessionToken,
+  clearAdminCookie,
+  hasValidAdminSession,
+  sha256Hex,
+  constantTimeEqual,
+} from "../app/admin-auth";
 
 interface Env {
   ADMIN_PASSWORD?: string;
@@ -20,47 +28,8 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
-const ADMIN_COOKIE_NAME = "arrival_admin_session";
-const ADMIN_COOKIE_SALT = "arrival-checkin-admin-v1";
-const encoder = new TextEncoder();
-
 function isAdminPath(pathname: string) {
   return pathname === "/" || pathname === "/admin" || pathname.startsWith("/admin/");
-}
-
-function cookieValue(request: Request, name: string) {
-  const cookieHeader = request.headers.get("cookie") ?? "";
-  for (const part of cookieHeader.split(";")) {
-    const [cookieName, ...valueParts] = part.trim().split("=");
-    if (cookieName === name) return valueParts.join("=");
-  }
-  return null;
-}
-
-function constantTimeEqual(left: string, right: string) {
-  if (left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  }
-  return difference === 0;
-}
-
-async function sha256Hex(value: string) {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-async function adminSessionToken(password: string) {
-  return sha256Hex(`${ADMIN_COOKIE_SALT}:${password}`);
-}
-
-function adminCookie(token: string, secure: boolean) {
-  return `${ADMIN_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`;
-}
-
-function clearAdminCookie(secure: boolean) {
-  return `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
 }
 
 function redirectToAdmin(cookie?: string) {
@@ -147,9 +116,7 @@ const worker = {
 
     if (isAdminPath(url.pathname)) {
       if (!env.ADMIN_PASSWORD) return adminLoginPage("中控台密碼尚未設定。", 503);
-      const suppliedToken = cookieValue(request, ADMIN_COOKIE_NAME) ?? "";
-      const expectedToken = await adminSessionToken(env.ADMIN_PASSWORD);
-      if (!constantTimeEqual(suppliedToken, expectedToken)) return adminLoginPage();
+      if (!(await hasValidAdminSession(request, env.ADMIN_PASSWORD))) return adminLoginPage();
     }
 
     if (url.pathname === "/_vinext/image") {

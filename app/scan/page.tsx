@@ -7,15 +7,14 @@ import {
   CHANNEL_NAME,
   LastScan,
   SavedEvent,
-  broadcastEventChange,
+  commitScan,
   displayValue,
   formatTime,
   getDisplayFields,
   labelForField,
-  publishLiveEvent,
+  readBackgroundImageDataUrl,
   readSavedEvent,
   scanKeysFor,
-  writeSavedEvent,
 } from "../checkin-core";
 
 type GuestResult = {
@@ -60,6 +59,7 @@ function guestResultFromSavedEvent(saved: SavedEvent | null): GuestResult | null
 
 export default function ScanPage() {
   const [event, setEvent] = useState<SavedEvent | null>(null);
+  const [backgroundImageDataUrl, setBackgroundImageDataUrl] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [scanText, setScanText] = useState("");
   const [result, setResult] = useState<GuestResult | null>(null);
@@ -248,7 +248,9 @@ export default function ScanPage() {
   const refreshEvent = useCallback(async () => {
     try {
       const saved = await readSavedEvent();
+      const background = await readBackgroundImageDataUrl();
       setEvent(saved);
+      setBackgroundImageDataUrl(background);
       const incomingResult = guestResultFromSavedEvent(saved);
       if (incomingResult && incomingResult.at !== lastPresentedAtRef.current) {
         showResult(incomingResult);
@@ -262,19 +264,9 @@ export default function ScanPage() {
   }, [showResult]);
 
   useEffect(() => {
-    readSavedEvent()
-      .then((saved) => {
-        setEvent(saved);
-        if (saved) void publishLiveEvent(saved).catch(() => undefined);
-        const incomingResult = guestResultFromSavedEvent(saved);
-        if (incomingResult && incomingResult.at !== lastPresentedAtRef.current) {
-          showResult(incomingResult);
-        }
-        setError("");
-      })
-      .catch(() => setError("無法讀取報到名單，請洽報到人員。"))
-      .finally(() => setReady(true));
-  }, [showResult]);
+    const timer = window.setTimeout(() => void refreshEvent(), 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshEvent]);
 
   useEffect(() => {
     if (typeof BroadcastChannel === "undefined") return;
@@ -310,54 +302,22 @@ export default function ScanPage() {
       if (!event) return;
       const code = rawCode.trim().replace(/[\r\n]+$/g, "");
       if (!code) return;
-      const keys = scanKeysFor(code);
-      const candidates = event.attendees.filter((attendee) =>
-        attendee.scanKeys.some((key) => keys.includes(key)),
-      );
       const scannedAt = new Date().toISOString();
       setScanText("");
-
-      if (!candidates.length) {
-        const lastScan: LastScan = { kind: "unknown", code, at: scannedAt };
-        const nextEvent = { ...event, lastScan };
-        setEvent(nextEvent);
-        showResult({ kind: "unknown", at: scannedAt });
-        await writeSavedEvent(nextEvent);
-        void publishLiveEvent(nextEvent).catch(() => undefined);
-        broadcastEventChange();
-        return;
+      try {
+        const committed = await commitScan(code, scannedAt);
+        setEvent(committed.event);
+        showResult({
+          kind: committed.outcome.kind,
+          attendee: committed.outcome.attendee,
+          at: committed.outcome.at,
+        });
+        if (!(await committed.projectionSync)) {
+          setError("報到紀錄已保存在這台電腦，但投影牆暫時無法同步。");
+        }
+      } catch {
+        setError("無法保存報到紀錄，請洽報到人員。");
       }
-
-      const attendee = candidates.find((candidate) => !candidate.checkedInAt) ?? candidates[0];
-      if (attendee.checkedInAt) {
-        const lastScan: LastScan = {
-          kind: "duplicate",
-          attendeeId: attendee.id,
-          at: scannedAt,
-        };
-        const nextEvent = { ...event, lastScan };
-        setEvent(nextEvent);
-        showResult({ kind: "duplicate", attendee, at: scannedAt });
-        await writeSavedEvent(nextEvent);
-        void publishLiveEvent(nextEvent).catch(() => undefined);
-        broadcastEventChange();
-        return;
-      }
-
-      const checkedAttendee = { ...attendee, checkedInAt: scannedAt };
-      const lastScan: LastScan = { kind: "success", attendeeId: attendee.id, at: scannedAt };
-      const nextEvent = {
-        ...event,
-        lastScan,
-        attendees: event.attendees.map((item) =>
-          item.id === attendee.id ? checkedAttendee : item,
-        ),
-      };
-      setEvent(nextEvent);
-      showResult({ kind: "success", attendee: checkedAttendee, at: scannedAt });
-      await writeSavedEvent(nextEvent);
-      void publishLiveEvent(nextEvent).catch(() => undefined);
-      broadcastEventChange();
     },
     [event, showResult],
   );
@@ -433,7 +393,6 @@ export default function ScanPage() {
     );
   }
 
-  const backgroundImageDataUrl = event.displaySettings?.backgroundImageDataUrl;
   const backgroundColor = event.displaySettings?.backgroundColor ?? DEFAULT_GUEST_BACKGROUND;
   const guestScreenStyle = {
     backgroundColor,
