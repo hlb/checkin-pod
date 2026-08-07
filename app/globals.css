@@ -131,9 +131,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   background: #fff;
   box-shadow: 0 16px 50px rgba(28,42,32,.16);
 }
-.menu-popover button { width: 100%; padding: 11px 12px; border: 0; border-radius: 8px; background: transparent; text-align: left; font-weight: 750; }
-.menu-popover button:hover { background: #f3f3ed; }
+.menu-popover button, .menu-popover a { width: 100%; padding: 11px 12px; display: block; border: 0; border-radius: 8px; background: transparent; color: inherit; text-align: left; text-decoration: none; font-size: 11px; font-weight: 750; }
+.menu-popover button:hover, .menu-popover a:hover { background: #f3f3ed; }
 .menu-popover .danger-item { color: #ba3d2a; }
+.menu-popover .logout-item { margin-top: 5px; border-top: 1px solid #e8e7df; border-radius: 0 0 8px 8px; color: #58645c; }
 
 .error-banner {
   width: min(1180px, calc(100% - 56px));

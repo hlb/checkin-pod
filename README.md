@@ -8,6 +8,8 @@
 
 ```bash
 npm install
+cp .env.example .env.local
+# 編輯 .env.local，設定 ADMIN_PASSWORD
 npm run dev
 ```
 
@@ -16,6 +18,8 @@ npm run dev
 - 管理畫面：[http://localhost:3000/admin](http://localhost:3000/admin)
 - 來賓掃描畫面：[http://localhost:3000/scan](http://localhost:3000/scan)
 - 投影能量牆：[http://localhost:3000/projection](http://localhost:3000/projection)
+
+`/` 與 `/admin` 需要輸入 `ADMIN_PASSWORD`；來賓與投影畫面維持公開。登入只保留在該瀏覽器工作階段，中控台右上角選單可手動登出。
 
 管理畫面與來賓掃描畫面要使用同一台電腦上的同一個瀏覽器，才能共用完整名單。投影能量牆可以開在另一台電腦上：先查出報到電腦的區網 IP（例如 `192.168.1.23`），再於投影電腦開啟 `http://192.168.1.23:3000/projection`。兩台電腦須連到同一個區網，macOS 防火牆若跳出提示請允許 Node 接受連線。
 

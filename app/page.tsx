@@ -1052,6 +1052,7 @@ export default function Home() {
                   <button type="button" className="danger-item" onClick={() => void removeList()}>
                     清除本機紀錄
                   </button>
+                  <a className="logout-item" href="/admin-auth/logout">登出中控台</a>
                 </div>
               ) : null}
             </div>

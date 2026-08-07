@@ -2,20 +2,36 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render(path = "/") {
+async function render(path = "/", init = {}) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    new Request(`http://localhost${path}`, {
+      ...init,
+      headers: { accept: "text/html", ...init.headers },
+    }),
+    {
+      ADMIN_PASSWORD: "test-password",
+      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    },
     { waitUntil() {}, passThroughOnException() {} },
   );
 }
 
+async function adminCookie() {
+  const response = await render("/admin-auth", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ password: "test-password" }),
+  });
+  assert.equal(response.status, 303);
+  return response.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+}
+
 test("server-renders the local check-in application shell", async () => {
-  const response = await render();
+  const response = await render("/", { headers: { cookie: await adminCookie() } });
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
@@ -27,8 +43,9 @@ test("server-renders the local check-in application shell", async () => {
 });
 
 test("provides separate admin, guest scanner, and projection routes", async () => {
+  const cookie = await adminCookie();
   const [adminResponse, scanResponse, projectionResponse] = await Promise.all([
-    render("/admin"),
+    render("/admin", { headers: { cookie } }),
     render("/scan"),
     render("/projection"),
   ]);
@@ -46,8 +63,33 @@ test("provides separate admin, guest scanner, and projection routes", async () =
   assert.match(projectionHtml, /啟動全場能量牆/);
 });
 
+test("password-protects the control center while keeping guest displays public", async () => {
+  const [lockedAdmin, scanResponse, projectionResponse] = await Promise.all([
+    render("/admin"),
+    render("/scan"),
+    render("/projection"),
+  ]);
+  assert.equal(lockedAdmin.status, 200);
+  assert.match(await lockedAdmin.text(), /工作人員密碼/);
+  assert.equal(scanResponse.status, 200);
+  assert.equal(projectionResponse.status, 200);
+
+  const wrongPassword = await render("/admin-auth", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ password: "wrong-password" }),
+  });
+  assert.equal(wrongPassword.status, 401);
+  assert.match(await wrongPassword.text(), /密碼不正確/);
+
+  const cookie = await adminCookie();
+  const unlockedAdmin = await render("/admin", { headers: { cookie } });
+  assert.equal(unlockedAdmin.status, 200);
+  assert.match(await unlockedAdmin.text(), /正在還原這台裝置的報到紀錄/);
+});
+
 test("includes local persistence, Luma columns, scanner capture, and CSV export", async () => {
-  const [page, scanPage, projectionPage, liveRoute, core, layout, styles, packageJson, sample, successAudio, failureAudio, boardingAudio, celebrationAudio] = await Promise.all([
+  const [page, scanPage, projectionPage, liveRoute, core, layout, styles, workerSource, packageJson, sample, successAudio, failureAudio, boardingAudio, celebrationAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/projection/page.tsx", import.meta.url), "utf8"),
@@ -55,6 +97,7 @@ test("includes local persistence, Luma columns, scanner capture, and CSV export"
     readFile(new URL("../app/checkin-core.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("./fixtures/luma-sample.csv", import.meta.url), "utf8"),
     readFile(new URL("../public/audio/checkin-success.mp3", import.meta.url)),
@@ -144,6 +187,10 @@ test("includes local persistence, Luma columns, scanner capture, and CSV export"
   assert.doesNotMatch(projectionPage, /className="energy-particle"/);
   assert.doesNotMatch(styles, /\.guest-screen\.show-result\s*\{[^}]*background-color:/s);
   assert.doesNotMatch(styles, /-webkit-line-clamp/);
+  assert.match(workerSource, /ADMIN_PASSWORD/);
+  assert.match(workerSource, /HttpOnly/);
+  assert.match(workerSource, /SameSite=Strict/);
+  assert.doesNotMatch(workerSource, /llap55688/);
   assert.doesNotMatch(core, /url\.pathname|lastPath/);
   assert.doesNotMatch(page, /url\.pathname|lastPath/);
   assert.ok(successAudio.length > 1_000);
