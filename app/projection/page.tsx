@@ -46,7 +46,7 @@ function planetStyle(attendee: LiveAttendee, index: number) {
   return {
     "--planet-x": `${x}%`,
     "--planet-y": `${y}%`,
-    "--planet-size": `${14 + ((hash >>> 16) % 19)}px`,
+    "--planet-size": `${18 + ((hash >>> 16) % 25)}px`,
     "--planet-light": palette[0],
     "--planet-mid": palette[1],
     "--planet-dark": palette[2],

@@ -41,3 +41,14 @@ test("keeps the same attendee on the same planet appearance", () => {
   assert.deepEqual(second, first);
   assert.ok(first.combinationIndex >= 0 && first.combinationIndex < 30);
 });
+
+test("the first 100 generated sample attendees visibly exercise all 30 combinations", () => {
+  const appearances = Array.from({ length: 100 }, (_, index) => {
+    const number = String(index + 1).padStart(3, "0");
+    return planetAppearanceForId(`gst-sample-${number}-${index}`);
+  });
+  assert.equal(new Set(appearances.map((appearance) => appearance.combinationIndex)).size, 30);
+  for (const type of PLANET_TYPES) {
+    assert.ok(appearances.filter((appearance) => appearance.type === type).length >= 10);
+  }
+});
