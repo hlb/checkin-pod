@@ -16,6 +16,8 @@ import {
   readSavedEvent,
   scanKeysFor,
 } from "../checkin-core";
+import { readSharedLane, scanSharedEvent } from "../shared-checkin";
+import type { SharedLaneSession } from "../shared-checkin";
 
 type GuestResult = {
   kind: LastScan["kind"];
@@ -35,6 +37,7 @@ type CameraDevice = { deviceId: string; label: string };
 
 const RESULT_DURATION_MS = 6500;
 const DEFAULT_GUEST_BACKGROUND = "#0E0F12";
+const LANE_SESSION_KEY = "checkin-pod-lane-session";
 
 function cameraDevicesFrom(devices: MediaDeviceInfo[]): CameraDevice[] {
   return devices
@@ -70,6 +73,7 @@ export default function ScanPage() {
   const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState("");
   const [resultSoundEnabled, setResultSoundEnabled] = useState(false);
+  const [laneSession, setLaneSession] = useState<SharedLaneSession | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -80,6 +84,7 @@ export default function ScanPage() {
   const successAudioRef = useRef<HTMLAudioElement>(null);
   const failureAudioRef = useRef<HTMLAudioElement>(null);
   const resultSoundEnabledRef = useRef(false);
+  const scanBusyRef = useRef(false);
 
   const updateCameraList = useCallback((devices: MediaDeviceInfo[]) => {
     const availableCameras = cameraDevicesFrom(devices);
@@ -247,17 +252,75 @@ export default function ScanPage() {
 
   const refreshEvent = useCallback(async () => {
     try {
-      const saved = await readSavedEvent();
-      const background = await readBackgroundImageDataUrl();
-      setEvent(saved);
-      setBackgroundImageDataUrl(background);
-      const incomingResult = guestResultFromSavedEvent(saved);
-      if (incomingResult && incomingResult.at !== lastPresentedAtRef.current) {
-        showResult(incomingResult);
+      const query = new URLSearchParams(window.location.search);
+      const querySession = query.get("event") && query.get("lane") && query.get("token")
+        ? {
+            eventId: query.get("event")!,
+            laneId: query.get("lane")!,
+            laneToken: query.get("token")!,
+            laneName: "報到工作站",
+          }
+        : null;
+      let storedSession: SharedLaneSession | null = null;
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(LANE_SESSION_KEY) ?? "null") as Partial<SharedLaneSession> | null;
+        if (parsed?.eventId && parsed.laneId && parsed.laneToken) {
+          storedSession = {
+            eventId: parsed.eventId,
+            laneId: parsed.laneId,
+            laneToken: parsed.laneToken,
+            laneName: parsed.laneName ?? "報到工作站",
+          };
+        }
+      } catch {
+        window.localStorage.removeItem(LANE_SESSION_KEY);
       }
+      const saved = await readSavedEvent();
+      if (!querySession && saved) {
+        const background = await readBackgroundImageDataUrl();
+        setEvent(saved);
+        setLaneSession(saved.sharedEvent ? {
+          eventId: saved.sharedEvent.eventId,
+          laneId: saved.sharedEvent.laneId,
+          laneName: saved.sharedEvent.laneName,
+          laneToken: saved.sharedEvent.laneToken,
+        } : null);
+        setBackgroundImageDataUrl(background);
+        const incomingResult = guestResultFromSavedEvent(saved);
+        if (incomingResult && incomingResult.at !== lastPresentedAtRef.current) {
+          showResult(incomingResult);
+        }
+        setError("");
+        return;
+      }
+      const remoteSession = querySession ?? storedSession;
+      if (remoteSession) {
+        const metadata = await readSharedLane(remoteSession);
+        const preparedSession = { ...remoteSession, laneName: metadata.laneName };
+        window.localStorage.setItem(LANE_SESSION_KEY, JSON.stringify(preparedSession));
+        setLaneSession(preparedSession);
+        setEvent({
+          version: 1,
+          fileName: metadata.fileName,
+          importedAt: metadata.eventId,
+          headers: metadata.headers,
+          attendees: [],
+          displaySettings: {
+            selectedFields: metadata.selectedFields,
+            backgroundColor: metadata.backgroundColor,
+          },
+        });
+        setBackgroundImageDataUrl(null);
+        setError("");
+        return;
+      }
+      setEvent(saved);
+      setLaneSession(null);
+      setBackgroundImageDataUrl(null);
       setError("");
-    } catch {
-      setError("無法讀取報到名單，請洽報到人員。");
+    } catch (caught) {
+      setEvent(null);
+      setError(caught instanceof Error ? caught.message : "無法讀取報到名單，請洽報到人員。");
     } finally {
       setReady(true);
     }
@@ -267,6 +330,12 @@ export default function ScanPage() {
     const timer = window.setTimeout(() => void refreshEvent(), 0);
     return () => window.clearTimeout(timer);
   }, [refreshEvent]);
+
+  useEffect(() => {
+    if (!laneSession) return;
+    const timer = window.setInterval(() => void refreshEvent(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [laneSession, refreshEvent]);
 
   useEffect(() => {
     if (typeof BroadcastChannel === "undefined") return;
@@ -299,14 +368,21 @@ export default function ScanPage() {
 
   const processScan = useCallback(
     async (rawCode: string) => {
-      if (!event) return;
+      if (!event || scanBusyRef.current) return;
       const code = rawCode.trim().replace(/[\r\n]+$/g, "");
       if (!code) return;
       const scannedAt = new Date().toISOString();
       setScanText("");
+      scanBusyRef.current = true;
       try {
-        const committed = await commitScan(code, scannedAt);
-        setEvent(committed.event);
+        const committed = laneSession
+          ? await scanSharedEvent(laneSession, code, scannedAt).then((outcome) => ({
+              event,
+              outcome,
+              projectionSync: Promise.resolve(true),
+            }))
+          : await commitScan(code, scannedAt);
+        if (!laneSession) setEvent(committed.event);
         showResult({
           kind: committed.outcome.kind,
           attendee: committed.outcome.attendee,
@@ -315,11 +391,13 @@ export default function ScanPage() {
         if (!(await committed.projectionSync)) {
           setError("報到紀錄已保存在這台電腦，但投影牆暫時無法同步。");
         }
-      } catch {
-        setError("無法保存報到紀錄，請洽報到人員。");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "無法保存報到紀錄，請洽報到人員。");
+      } finally {
+        scanBusyRef.current = false;
       }
     },
-    [event, showResult],
+    [event, laneSession, showResult],
   );
 
   useEffect(() => {
@@ -355,13 +433,13 @@ export default function ScanPage() {
   useEffect(() => {
     if (!event || scanText.trim().length < 3) return;
     const keys = scanKeysFor(scanText);
-    const isKnown = event.attendees.some((attendee) =>
+    const isKnown = laneSession || event.attendees.some((attendee) =>
       attendee.scanKeys.some((key) => keys.includes(key)),
     );
     if (!isKnown) return;
     const timer = window.setTimeout(() => void processScan(scanText), 100);
     return () => window.clearTimeout(timer);
-  }, [event, processScan, scanText]);
+  }, [event, laneSession, processScan, scanText]);
 
   const submitScan = (formEvent: FormEvent) => {
     formEvent.preventDefault();
@@ -386,7 +464,7 @@ export default function ScanPage() {
         <div className="guest-empty-card">
           <span className="empty-mark">!</span>
           <h1>尚未載入活動名單</h1>
-          <p>請先由報到人員開啟管理頁並匯入 Luma 或 KKTIX CSV。</p>
+          <p>{error || "請先由報到人員開啟管理頁並匯入 Luma 或 KKTIX CSV。"}</p>
           <a href="/admin">前往管理頁</a>
         </div>
       </main>
@@ -425,7 +503,7 @@ export default function ScanPage() {
         <div className="scan-settings-popover">
           <div className="scan-settings-heading">
             <strong>鏡頭掃描</strong>
-            <span>USB 掃描器仍可同時使用</span>
+            <span>{laneSession ? `${laneSession.laneName} · 多工作站同步中` : "USB 掃描器仍可同時使用"}</span>
           </div>
           <div className="camera-controls">
             {cameraDevices.length > 1 ? (

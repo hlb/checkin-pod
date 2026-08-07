@@ -78,12 +78,16 @@ test("password-protects the control center while keeping displays public", async
 test("logging out ends the public projection without deleting browser records", async () => {
   const cookie = await adminCookie();
   let deletedLiveEventId = null;
+  let disabledSharedProjection = false;
   const database = {
     prepare(sql) {
-      assert.match(sql, /DELETE FROM live_event_state/);
+      const isLegacyDelete = /DELETE FROM live_event_state/.test(sql);
+      const isSharedDisable = /UPDATE checkin_events SET active = 0/.test(sql);
+      assert.ok(isLegacyDelete || isSharedDisable, `unexpected logout SQL: ${sql}`);
       return {
-        bind(id) {
-          deletedLiveEventId = id;
+        bind(value) {
+          if (isLegacyDelete) deletedLiveEventId = value;
+          if (isSharedDisable) disabledSharedProjection = true;
           return this;
         },
         async run() {
@@ -102,6 +106,7 @@ test("logging out ends the public projection without deleting browser records", 
   assert.equal(response.headers.get("location"), "/admin");
   assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);
   assert.equal(deletedLiveEventId, 1);
+  assert.equal(disabledSharedProjection, true);
 });
 
 test("an unauthenticated logout request cannot clear the public projection", async () => {
@@ -118,12 +123,14 @@ test("an unauthenticated logout request cannot clear the public projection", asy
 });
 
 test("wires persistence, scanner, secured projection sync, and event controls", async () => {
-  const [page, scanPage, projectionPage, planetVariants, liveRoute, policy, core, auth, styles, workerSource, sampleZip, successAudio, failureAudio] = await Promise.all([
+  const [page, scanPage, projectionPage, planetVariants, liveRoute, sharedRoute, sharedSql, policy, core, auth, styles, workerSource, sampleZip, successAudio, failureAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/projection/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/planet-variants.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/live-event/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/shared-checkin/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/shared-checkin-sql.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/live-event-policy.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/checkin-core.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/admin-auth.ts", import.meta.url), "utf8"),
@@ -134,11 +141,15 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
     readFile(new URL("../public/audio/checkin-failure.mp3", import.meta.url)),
   ]);
 
-  assert.match(page, /const MAX_ATTENDEES = 200/);
+  assert.match(page, /MAX_ATTENDEES = MAX_SHARED_ATTENDEES/);
+  assert.match(page, /GUESTS_PER_PAGE = 100/);
+  assert.match(page, /新增報到工作站/);
   assert.match(page, /checkin-pod-sample-150\.zip/);
   assert.match(page, /Checkin Pod/);
   assert.match(page, /commitScan/);
   assert.match(scanPage, /commitScan/);
+  assert.match(scanPage, /scanSharedEvent/);
+  assert.match(scanPage, /LANE_SESSION_KEY/);
   assert.doesNotMatch(page, /indexedDB\.open/);
   assert.match(core, /indexedDB\.open/);
   assert.match(core, /DB_VERSION = 2/);
@@ -162,13 +173,20 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(projectionPage, /CHECKIN POD · LIVE ENERGY WALL/);
   assert.match(projectionPage, /pendingCueRef/);
   assert.match(projectionPage, /new Set<number>/);
-  assert.match(projectionPage, /checkedIn\.map/);
+  assert.match(projectionPage, /activeEntrance \? \(\(\) =>/);
+  assert.match(projectionPage, /energy-planet-canvas/);
+  assert.match(projectionPage, /drawSettledPlanet/);
   assert.match(projectionPage, /type-\$\{appearance\.type\}/);
   assert.match(planetVariants, /PLANET_PALETTES/);
   assert.match(planetVariants, /PLANET_TYPES/);
   assert.match(planetVariants, /combinationIndex/);
   assert.match(liveRoute, /hasValidAdminSession/);
   assert.match(liveRoute, /isLiveEventWriterAuthorized/);
+  assert.match(sharedRoute, /hasValidAdminSession/);
+  assert.match(sharedRoute, /sha256Hex\(laneToken\)/);
+  assert.match(sharedRoute, /SHARED_CHANGE_PAGE_SIZE \+ 1/);
+  assert.match(sharedSql, /checked_in_at IS NULL/);
+  assert.match(sharedSql, /CHECK\(total >= 0 AND total <= 10000\)/);
   assert.match(policy, /input\.total > 200/);
   assert.match(policy, /isStaleLiveEventSnapshot/);
   assert.match(auth, /HttpOnly/);

@@ -35,8 +35,23 @@ import {
   scanKeysFor,
   toAttendees,
   writeBackgroundImageDataUrl,
+  writeSavedEvent,
 } from "./checkin-core";
 import type { ProjectionCueType } from "./checkin-core";
+import {
+  MAX_SHARED_ATTENDEES,
+  applySharedChanges,
+  applySharedScanResult,
+  createSharedLane,
+  deleteSharedEvent,
+  fetchSharedChanges,
+  importSharedEvent,
+  scanSharedEvent,
+  sendSharedProjectionCue,
+  setSharedAttendeeCheckIn,
+  updateSharedSettings,
+} from "./shared-checkin";
+import type { SharedLane } from "./shared-checkin";
 
 type ScanResult =
   | { kind: "success"; attendee: Attendee; message: string }
@@ -46,7 +61,8 @@ type ScanResult =
 
 type Filter = "all" | "pending" | "arrived";
 
-const MAX_ATTENDEES = 200;
+const MAX_ATTENDEES = MAX_SHARED_ATTENDEES;
+const GUESTS_PER_PAGE = 100;
 const MAX_BACKGROUND_FILE_SIZE = 15 * 1024 * 1024;
 const MAX_BACKGROUND_WIDTH = 2560;
 const MAX_BACKGROUND_HEIGHT = 1440;
@@ -221,19 +237,26 @@ export default function Home() {
   const [backgroundUploading, setBackgroundUploading] = useState(false);
   const [controlBusy, setControlBusy] = useState<ProjectionCueType | null>(null);
   const [controlNote, setControlNote] = useState("控制指令將送往投影牆");
+  const [importProgress, setImportProgress] = useState(0);
+  const [guestPage, setGuestPage] = useState(1);
+  const [laneName, setLaneName] = useState("");
+  const [createdLane, setCreatedLane] = useState<SharedLane | null>(null);
+  const [laneBusy, setLaneBusy] = useState(false);
   const scanInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
   const scanBufferRef = useRef("");
   const lastKeyAtRef = useRef(0);
   const scannerIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sharedEventId = event?.sharedEvent?.eventId;
+  const sharedInitialCursor = event?.sharedEvent?.cursor ?? 0;
 
   useEffect(() => {
     const load = async () => {
       try {
         const saved = await readSavedEvent();
         let prepared = saved;
-        if (saved) {
+        if (saved && !saved.sharedEvent) {
           try {
             prepared = await ensureSavedEventWriterToken();
           } catch {
@@ -251,6 +274,51 @@ export default function Home() {
     };
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!sharedEventId) return;
+    let disposed = false;
+    let busy = false;
+    let nextCursor = sharedInitialCursor;
+    const poll = async () => {
+      if (busy || disposed) return;
+      busy = true;
+      try {
+        let cursor = nextCursor;
+        let hasMore = true;
+        while (hasMore && !disposed) {
+          const batch = await fetchSharedChanges(sharedEventId, cursor);
+          if (!batch.changes.length && batch.cursor === cursor) break;
+          cursor = batch.cursor;
+          nextCursor = batch.cursor;
+          hasMore = batch.hasMore;
+          const next = await mutateSavedEvent((current) =>
+            current.sharedEvent?.eventId === sharedEventId
+              ? applySharedChanges(current, batch.changes, batch.cursor)
+              : current,
+          );
+          if (disposed || next.sharedEvent?.eventId !== sharedEventId) break;
+          setEvent(next);
+          const latest = batch.changes.at(-1);
+          if (latest) {
+            setScanResult(resultFromSavedEvent(next));
+            setLastInputAt(latest.occurredAt);
+            if (latest.laneName) setControlNote(`最近報到來自 ${latest.laneName}`);
+          }
+        }
+      } catch {
+        if (!disposed) setError("多工作站同步暫時中斷；正在保留本機畫面並會自動重試。");
+      } finally {
+        busy = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 700);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [sharedEventId, sharedInitialCursor]);
 
   useEffect(() => {
     if (typeof BroadcastChannel === "undefined") return;
@@ -283,7 +351,17 @@ export default function Home() {
       setLastInputAt(scannedAt);
       setScanText("");
       try {
-        const committed = await commitScan(code, scannedAt);
+        const committed = await (event.sharedEvent
+          ? (() => {
+              const current = event;
+              return scanSharedEvent(current.sharedEvent!, code, scannedAt).then(async (outcome) => {
+                const next = applySharedScanResult(current, { ...outcome, code });
+                await writeSavedEvent(next);
+                broadcastEventChange();
+                return { event: next, outcome, projectionSync: Promise.resolve(true) };
+              });
+            })()
+          : commitScan(code, scannedAt));
         setEvent(committed.event);
         const attendee = committed.outcome.attendee;
         setScanResult(committed.outcome.kind === "unknown"
@@ -379,6 +457,7 @@ export default function Home() {
       }
 
       setImporting(true);
+      setImportProgress(0);
       try {
         const source = await file.text();
         const { headers, rows } = parseCsv(source);
@@ -405,8 +484,11 @@ export default function Home() {
           excludedRowCount: rows.length - attendees.length,
           displaySettings: { selectedFields: defaultDisplayFields(headers) },
         };
+        const sharedEvent = await importSharedEvent(nextEvent, (uploaded, total) => {
+          setImportProgress(Math.round((uploaded / total) * 100));
+        });
         await writeBackgroundImageDataUrl(null);
-        const committed = await replaceSavedEvent(nextEvent);
+        const committed = await replaceSavedEvent({ ...nextEvent, sharedEvent });
         setEvent(committed.event);
         setBackgroundImageDataUrl(null);
         if (!(await committed.projectionSync)) {
@@ -415,11 +497,13 @@ export default function Home() {
         setScanResult(null);
         setFilter("all");
         setSearch("");
+        setGuestPage(1);
         window.setTimeout(() => scanInputRef.current?.focus(), 80);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "無法讀取這份 CSV，請確認檔案格式。 ");
       } finally {
         setImporting(false);
+        setImportProgress(0);
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
@@ -442,7 +526,21 @@ export default function Home() {
     if (!event) return;
     const checkedInAt = attendee.checkedInAt ? null : new Date().toISOString();
     try {
-      const committed = await commitAttendeeCheckIn(attendee.id, checkedInAt);
+      const committed = event.sharedEvent
+        ? await setSharedAttendeeCheckIn(event.sharedEvent.eventId, attendee.id, checkedInAt).then(async (result) => {
+            const updated = { ...attendee, checkedInAt: result.attendee.checkedInAt };
+            const next: SavedEvent = {
+              ...event,
+              revision: (event.revision ?? 0) + 1,
+              sharedEvent: event.sharedEvent,
+              lastScan: checkedInAt ? { kind: "success", attendeeId: attendee.id, at: checkedInAt } : event.lastScan,
+              attendees: event.attendees.map((item) => item.id === attendee.id ? updated : item),
+            };
+            await writeSavedEvent(next);
+            broadcastEventChange();
+            return { event: next, attendee: updated, projectionSync: Promise.resolve(true) };
+          })
+        : await commitAttendeeCheckIn(attendee.id, checkedInAt);
       setEvent(committed.event);
       if (checkedInAt) setLastInputAt(checkedInAt);
       setScanResult(
@@ -511,6 +609,7 @@ export default function Home() {
     if (!event || !window.confirm("確定要清除這台瀏覽器中的名單與所有報到紀錄嗎？此動作無法復原。")) {
       return;
     }
+    if (event.sharedEvent) await deleteSharedEvent(event.sharedEvent.eventId).catch(() => undefined);
     await clearSavedEvent();
     await clearLiveEvent().catch(() => undefined);
     broadcastEventChange();
@@ -551,7 +650,10 @@ export default function Home() {
     void mutateSavedEvent((current) => ({
       ...current,
       displaySettings: { ...current.displaySettings, selectedFields },
-    })).then(setEvent).catch(() => setError("無法保存來賓畫面欄位設定。"));
+    })).then(async (next) => {
+      setEvent(next);
+      if (next.sharedEvent) await updateSharedSettings(next.sharedEvent.eventId, next.displaySettings!);
+    }).catch(() => setError("無法保存來賓畫面欄位設定。"));
   };
 
   const handleBackgroundChange = async (changeEvent: ChangeEvent<HTMLInputElement>) => {
@@ -594,7 +696,10 @@ export default function Home() {
         selectedFields: selectedDisplayFields,
         backgroundColor,
       },
-    })).then(setEvent).catch(() => setError("無法保存背景底色。"));
+    })).then(async (next) => {
+      setEvent(next);
+      if (next.sharedEvent) await updateSharedSettings(next.sharedEvent.eventId, next.displaySettings!);
+    }).catch(() => setError("無法保存背景底色。"));
   };
 
   const arrived = event?.attendees.filter((attendee) => attendee.checkedInAt).length ?? 0;
@@ -617,7 +722,8 @@ export default function Home() {
   const triggerProjectionCue = async (type: ProjectionCueType) => {
     setControlBusy(type);
     try {
-      await publishProjectionCue(type);
+      if (event?.sharedEvent) await sendSharedProjectionCue(event.sharedEvent.eventId, type);
+      else await publishProjectionCue(type);
       setControlNote(type === "boarding" ? "登車廣播指令已送出" : "全場彩蛋指令已送出");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "無法控制投影牆。");
@@ -646,6 +752,31 @@ export default function Home() {
         return a.name.localeCompare(b.name, "zh-Hant");
       });
   }, [event, filter, search]);
+  const guestPageCount = Math.max(1, Math.ceil(visibleAttendees.length / GUESTS_PER_PAGE));
+  const pagedAttendees = visibleAttendees.slice(
+    (Math.min(guestPage, guestPageCount) - 1) * GUESTS_PER_PAGE,
+    Math.min(guestPage, guestPageCount) * GUESTS_PER_PAGE,
+  );
+
+  const addLane = async () => {
+    if (!event?.sharedEvent || !laneName.trim()) return;
+    setLaneBusy(true);
+    try {
+      const lane = await createSharedLane(event.sharedEvent.eventId, laneName.trim());
+      setCreatedLane(lane);
+      setLaneName("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法建立工作站。");
+    } finally {
+      setLaneBusy(false);
+    }
+  };
+
+  const copyLaneUrl = async () => {
+    if (!createdLane) return;
+    await navigator.clipboard.writeText(createdLane.url);
+    setControlNote(`${createdLane.laneName} 的工作站連結已複製`);
+  };
 
   if (!ready) {
     return (
@@ -683,7 +814,7 @@ export default function Home() {
         </a>
         {event ? (
           <div className="top-actions">
-            <span className="saved-pill"><i /> 已儲存在此裝置</span>
+            <span className="saved-pill"><i /> {event.sharedEvent ? "多工作站同步中" : "已儲存在此裝置"}</span>
             <a className="display-button" href="/scan" target="_blank" rel="noreferrer">
               開啟來賓畫面 <span aria-hidden="true">↗</span>
             </a>
@@ -733,7 +864,7 @@ export default function Home() {
             <p className="eyebrow"><span /> 現場報到，從容開始</p>
             <h1>一掃，就知道<br /><em>誰抵達了。</em></h1>
             <p className="welcome-lead">
-              匯入 Luma 或 KKTIX 活動名單，接上掃描器就能開始。最多 200 人，報到紀錄保存在這台裝置。
+              匯入 Luma 或 KKTIX 活動名單，接上掃描器就能開始。最多 10,000 人，支援多台設備同步報到。
             </p>
             <div className="trust-row">
               <span><b>01</b> 匯入 CSV</span>
@@ -763,14 +894,14 @@ export default function Home() {
               disabled={importing}
               onClick={() => fileInputRef.current?.click()}
             >
-              {importing ? "匯入中…" : "選擇 CSV 檔案"}
+              {importing ? `同步名單中${importProgress ? ` · ${importProgress}%` : "…"}` : "選擇 CSV 檔案"}
             </button>
             <button className="sample-link" type="button" onClick={downloadSample}>
               先下載欄位範例（150 人 ZIP）
             </button>
             <div className="privacy-note">
               <span aria-hidden="true">⌂</span>
-              <p><strong>完整名單只存在本機</strong><br />投影同步僅傳姓名、報到時間、總人數與控制指令</p>
+              <p><strong>名單會安全同步至活動工作站</strong><br />每台設備都能即時防止同一張票重複入場</p>
             </div>
           </div>
         </section>
@@ -822,6 +953,38 @@ export default function Home() {
                 <div><strong>開啟投影牆</strong><small>投影電腦以相同網站網址開啟</small></div>
               </a>
             </div>
+
+            {event.sharedEvent ? (
+              <section className="lane-control" aria-label="多工作站報到">
+                <div className="lane-control-copy">
+                  <span>Multi-device lanes</span>
+                  <strong>新增報到工作站</strong>
+                  <p>每台設備使用自己的連結；所有掃描都由共用資料庫原子判定，避免重複入場。</p>
+                </div>
+                <div className="lane-create-form">
+                  <label>
+                    <span>工作站名稱</span>
+                    <input
+                      value={laneName}
+                      maxLength={80}
+                      placeholder="例如：入口 A、二樓報到處"
+                      onChange={(changeEvent) => setLaneName(changeEvent.target.value)}
+                    />
+                  </label>
+                  <button type="button" disabled={laneBusy || !laneName.trim()} onClick={() => void addLane()}>
+                    {laneBusy ? "建立中…" : "建立工作站連結"}
+                  </button>
+                </div>
+                {createdLane ? (
+                  <div className="lane-link-result" aria-live="polite">
+                    <div><span>已建立</span><strong>{createdLane.laneName}</strong></div>
+                    <code>{createdLane.url}</code>
+                    <button type="button" onClick={() => void copyLaneUrl()}>複製連結</button>
+                    <a href={createdLane.url} target="_blank" rel="noreferrer">在這台電腦開啟 ↗</a>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             <div className="cockpit-grid">
               <article className="cockpit-card rate-overview">
@@ -1038,16 +1201,16 @@ export default function Home() {
               </div>
               <div className="toolbar-controls">
                 <div className="filter-tabs" role="group" aria-label="篩選名單">
-                  <button className={filter === "all" ? "active" : ""} type="button" onClick={() => setFilter("all")}>全部 <span>{total}</span></button>
-                  <button className={filter === "pending" ? "active" : ""} type="button" onClick={() => setFilter("pending")}>未報到 <span>{remaining}</span></button>
-                  <button className={filter === "arrived" ? "active" : ""} type="button" onClick={() => setFilter("arrived")}>已報到 <span>{arrived}</span></button>
+                  <button className={filter === "all" ? "active" : ""} type="button" onClick={() => { setFilter("all"); setGuestPage(1); }}>全部 <span>{total}</span></button>
+                  <button className={filter === "pending" ? "active" : ""} type="button" onClick={() => { setFilter("pending"); setGuestPage(1); }}>未報到 <span>{remaining}</span></button>
+                  <button className={filter === "arrived" ? "active" : ""} type="button" onClick={() => { setFilter("arrived"); setGuestPage(1); }}>已報到 <span>{arrived}</span></button>
                 </div>
                 <label className="search-box">
                   <span aria-hidden="true">⌕</span>
                   <span className="visually-hidden">搜尋來賓</span>
                   <input
                     value={search}
-                    onChange={(changeEvent) => setSearch(changeEvent.target.value)}
+                    onChange={(changeEvent) => { setSearch(changeEvent.target.value); setGuestPage(1); }}
                     placeholder="搜尋姓名、Email、票種"
                   />
                 </label>
@@ -1060,7 +1223,7 @@ export default function Home() {
                   <tr><th>來賓</th><th>票種</th><th>報名狀態</th><th>報到時間</th><th><span className="visually-hidden">操作</span></th></tr>
                 </thead>
                 <tbody>
-                  {visibleAttendees.map((attendee) => (
+                  {pagedAttendees.map((attendee) => (
                     <tr key={attendee.id} className={attendee.checkedInAt ? "is-checked" : ""}>
                       <td>
                         <div className="guest-identity">
@@ -1092,13 +1255,22 @@ export default function Home() {
                 <div className="empty-results"><span>⌕</span><strong>找不到符合的來賓</strong><p>試試其他姓名、Email 或篩選條件。</p></div>
               ) : null}
             </div>
+            {visibleAttendees.length > GUESTS_PER_PAGE ? (
+              <nav className="guest-pagination" aria-label="來賓名單分頁">
+                <span>共 {visibleAttendees.length.toLocaleString()} 位 · 第 {Math.min(guestPage, guestPageCount)} / {guestPageCount} 頁</span>
+                <div>
+                  <button type="button" disabled={guestPage <= 1} onClick={() => setGuestPage((page) => Math.max(1, page - 1))}>上一頁</button>
+                  <button type="button" disabled={guestPage >= guestPageCount} onClick={() => setGuestPage((page) => Math.min(guestPageCount, page + 1))}>下一頁</button>
+                </div>
+              </nav>
+            ) : null}
           </section>
         </>
       )}
 
       <footer>
         <p><span className="brand-mark small">P</span> Checkin Pod · 活動報到輔助機</p>
-        <p>完整名單保存在這台瀏覽器；投影牆只接收姓名與報到狀態</p>
+        <p>活動名單由共用資料庫同步；工作站只取得報到所需資料</p>
       </footer>
     </main>
   );

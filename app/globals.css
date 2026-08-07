@@ -378,6 +378,23 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .event-control-strip strong, .event-control-strip small { display: block; }
 .event-control-strip strong { font-size: 12px; }
 .event-control-strip small { margin-top: 4px; color: #aebfb4; font-size: 9px; font-weight: 650; }
+.lane-control { margin-top: 14px; padding: 18px; position: relative; z-index: 2; display: grid; grid-template-columns: minmax(220px, .8fr) minmax(320px, 1.2fr); gap: 18px; color: #fff; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); border-radius: 16px; }
+.lane-control-copy > span { color: #8fe4bd; font-size: 8px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
+.lane-control-copy strong { margin-top: 5px; display: block; font-size: 14px; }
+.lane-control-copy p { max-width: 480px; margin: 6px 0 0; color: #aebfb4; font-size: 10px; line-height: 1.55; }
+.lane-create-form { display: flex; align-items: flex-end; gap: 9px; }
+.lane-create-form label { flex: 1; }
+.lane-create-form label > span { margin-bottom: 6px; display: block; color: #aebfb4; font-size: 9px; font-weight: 800; }
+.lane-create-form input { width: 100%; min-height: 42px; padding: 0 12px; color: #fff; background: rgba(7,18,13,.52); border: 1px solid rgba(255,255,255,.17); border-radius: 10px; outline: none; }
+.lane-create-form input:focus { border-color: #8fe4bd; box-shadow: 0 0 0 3px rgba(143,228,189,.1); }
+.lane-create-form button, .lane-link-result button, .lane-link-result a { min-height: 42px; padding: 0 14px; color: #10251b; background: #8fe4bd; border: 0; border-radius: 10px; font-size: 10px; font-weight: 900; text-decoration: none; white-space: nowrap; }
+.lane-create-form button:disabled { opacity: .45; }
+.lane-link-result { grid-column: 1 / -1; padding-top: 14px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; border-top: 1px solid rgba(255,255,255,.1); }
+.lane-link-result div span, .lane-link-result div strong { display: block; }
+.lane-link-result div span { color: #8fe4bd; font-size: 8px; font-weight: 900; }
+.lane-link-result div strong { margin-top: 3px; font-size: 11px; }
+.lane-link-result code { padding: 10px; overflow: hidden; color: #c8d6ce; background: rgba(0,0,0,.2); border-radius: 8px; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.lane-link-result a { display: grid; place-items: center; color: #fff; background: transparent; border: 1px solid rgba(255,255,255,.2); }
 .cockpit-grid { margin-top: 16px; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; position: relative; z-index: 2; }
 .cockpit-card { min-width: 0; padding: 24px; color: var(--ink); background: #fbfaf5; border: 1px solid rgba(255,255,255,.28); border-radius: 18px 18px 18px 6px; box-shadow: 0 18px 50px rgba(0,0,0,.14); }
 .cockpit-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -471,6 +488,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .search-box > span { color: #7c847d; font-size: 20px; }
 .search-box input { width: 100%; border: 0; outline: 0; background: transparent; font-size: 12px; }
 .guest-table-wrap { overflow: hidden; background: rgba(255,255,255,.68); border: 1px solid var(--line); border-radius: 17px; box-shadow: 0 10px 35px rgba(28,41,31,.045); }
+.guest-pagination { margin-top: 14px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; }
+.guest-pagination > div { display: flex; gap: 8px; }
+.guest-pagination button { min-width: 78px; padding: 9px 13px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 9px; font-size: 10px; font-weight: 850; }
+.guest-pagination button:disabled { opacity: .4; }
 .guest-table { width: 100%; border-collapse: collapse; }
 .guest-table th { padding: 14px 20px; color: #7c837c; background: #ebeae3; border-bottom: 1px solid var(--line); font-size: 10px; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
 .guest-table th:last-child { text-align: right; }
@@ -605,6 +626,7 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
 .projection-connection.is-connected { color: #b9d9c5; }
 .projection-connection.is-connected i { background: #6ee7a1; box-shadow: 0 0 13px rgba(110,231,161,.8); }
 .energy-field { position: absolute; inset: clamp(85px, 11vh, 130px) 3vw clamp(95px, 13vh, 145px); }
+.energy-planet-canvas { width: 100%; height: 100%; position: absolute; inset: 0; z-index: 4; pointer-events: none; }
 .energy-halo { position: absolute; left: 50%; top: 50%; border: 1px solid rgba(255,216,74,.12); border-radius: 50%; transform: translate(-50%, -50%); animation: energyHalo 8s ease-in-out infinite; }
 .energy-halo.halo-one { width: min(38vw, 580px); aspect-ratio: 1; box-shadow: inset 0 0 90px rgba(255,216,74,.035), 0 0 75px rgba(255,216,74,.025); }
 .energy-halo.halo-two { width: min(59vw, 900px); aspect-ratio: 1; border-color: rgba(87,229,229,.07); animation-delay: -4s; }
@@ -681,6 +703,9 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .event-control-strip { grid-template-columns: 1fr 1fr; }
   .event-control-strip > a { grid-column: 1 / -1; }
+  .lane-control { grid-template-columns: 1fr; }
+  .lane-link-result { grid-column: auto; grid-template-columns: 1fr auto; }
+  .lane-link-result code { grid-column: 1 / -1; }
   .projection-link { display: none; }
   .stats-panel { grid-template-columns: repeat(4, 1fr); }
   .stat-card, .micro-stat { grid-column: span 1; }
@@ -729,6 +754,9 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .control-status { align-self: flex-start; }
   .event-control-strip { grid-template-columns: 1fr; }
   .event-control-strip > a { grid-column: auto; }
+  .lane-create-form { align-items: stretch; flex-direction: column; }
+  .lane-link-result { grid-template-columns: 1fr; }
+  .lane-link-result code { grid-column: auto; }
   .cockpit-grid { grid-template-columns: 1fr; }
   .rate-overview, .arrival-chart-card, .cockpit-live-panel, .recent-arrivals-card { grid-column: 1; }
   .cockpit-card { padding: 19px; }

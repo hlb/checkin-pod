@@ -45,6 +45,14 @@ async function clearPublishedLiveEvent(database: D1Database) {
     .prepare("DELETE FROM live_event_state WHERE id = ?")
     .bind(1)
     .run();
+  try {
+    await database
+      .prepare("UPDATE checkin_events SET active = 0, updated_at = ? WHERE active = 1")
+      .bind(new Date().toISOString())
+      .run();
+  } catch {
+    // Older databases may not have the shared check-in tables yet.
+  }
 }
 
 function adminLoginPage(message = "", status = 200) {

@@ -39,6 +39,7 @@ export type SavedEvent = {
   lastScan?: LastScan;
   revision?: number;
   writerToken?: string;
+  sharedEvent?: import("./shared-checkin").SharedEventConnection;
 };
 
 export type ScanOutcome = {
@@ -454,7 +455,9 @@ export async function replaceSavedEvent(event: SavedEvent) {
   };
   await withEventWriteLock(() => writeSavedEvent(prepared));
   broadcastEventChange();
-  const projectionSync = publishLiveEvent(prepared).then(() => true, () => false);
+  const projectionSync = event.sharedEvent
+    ? Promise.resolve(true)
+    : publishLiveEvent(prepared).then(() => true, () => false);
   return { event: prepared, projectionSync };
 }
 

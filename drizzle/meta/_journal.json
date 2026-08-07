@@ -8,6 +8,13 @@
       "when": 1786073254760,
       "tag": "0000_round_sabra",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786125087166,
+      "tag": "0001_volatile_tigra",
+      "breakpoints": true
     }
   ]
 }
