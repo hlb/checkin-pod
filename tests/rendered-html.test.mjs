@@ -127,7 +127,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.doesNotMatch(workerSource + auth, /llap55688/);
   assert.match(styles, /\.guest-screen\.has-custom-background\s*\{[^}]*background-size:\s*contain/s);
   assert.match(styles, /@keyframes planetFlyIn/);
-  for (const type of ["rocky", "ringed", "banded", "cratered", "molten", "crystal"]) {
+  for (const type of ["rocky", "ringed", "banded", "cube", "molten", "crystal"]) {
     assert.match(styles, new RegExp(`\\.energy-planet\\.type-${type}`));
   }
   assert.ok(sampleZip.length > 10_000);

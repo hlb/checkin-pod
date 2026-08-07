@@ -14,7 +14,7 @@ test("defines five palettes and six visually distinct planet types", () => {
     "rocky",
     "ringed",
     "banded",
-    "cratered",
+    "cube",
     "molten",
     "crystal",
   ]);

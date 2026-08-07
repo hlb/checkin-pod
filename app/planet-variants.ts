@@ -10,7 +10,7 @@ export const PLANET_TYPES = [
   "rocky",
   "ringed",
   "banded",
-  "cratered",
+  "cube",
   "molten",
   "crystal",
 ] as const;
@@ -21,7 +21,7 @@ export const PLANET_TYPE_LABELS: Record<PlanetType, string> = {
   rocky: "地貌星球",
   ringed: "光環星球",
   banded: "氣態條紋星球",
-  cratered: "隕石坑星球",
+  cube: "機械正立方體",
   molten: "熔岩星球",
   crystal: "晶體星球",
 };
