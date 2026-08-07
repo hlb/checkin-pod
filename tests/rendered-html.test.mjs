@@ -36,7 +36,7 @@ test("server-renders the check-in application shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<html[^>]*lang="zh-Hant"/i);
-  assert.match(html, /<title>抵達｜Luma \/ KKTIX QR 報到台<\/title>/i);
+  assert.match(html, /<title>Checkin Pod｜活動報到輔助機<\/title>/i);
   assert.match(html, /正在還原這台裝置的報到紀錄/);
 });
 
@@ -129,17 +129,23 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
     readFile(new URL("../app/admin-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
-    readFile(new URL("../public/arrival-checkin-sample-150.zip", import.meta.url)),
+    readFile(new URL("../public/checkin-pod-sample-150.zip", import.meta.url)),
     readFile(new URL("../public/audio/checkin-success.mp3", import.meta.url)),
     readFile(new URL("../public/audio/checkin-failure.mp3", import.meta.url)),
   ]);
 
   assert.match(page, /const MAX_ATTENDEES = 200/);
+  assert.match(page, /checkin-pod-sample-150\.zip/);
+  assert.match(page, /Checkin Pod/);
   assert.match(page, /commitScan/);
   assert.match(scanPage, /commitScan/);
   assert.doesNotMatch(page, /indexedDB\.open/);
   assert.match(core, /indexedDB\.open/);
   assert.match(core, /DB_VERSION = 2/);
+  assert.match(core, /const DB_NAME = "checkin-pod"/);
+  assert.match(core, /const LEGACY_DB_NAME = "arrival-checkin"/);
+  assert.match(core, /CHANNEL_NAME = "checkin-pod-sync"/);
+  assert.match(core, /WRITE_LOCK_NAME = "checkin-pod-write"/);
   assert.match(core, /navigator\.locks/);
   assert.match(core, /applyScanToEvent/);
   assert.match(core, /ASSET_STORE_NAME/);
@@ -153,6 +159,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(page, /播放登車廣播/);
   assert.match(page, /全場彩蛋/);
   assert.match(projectionPage, /arrivalQueue/);
+  assert.match(projectionPage, /CHECKIN POD · LIVE ENERGY WALL/);
   assert.match(projectionPage, /pendingCueRef/);
   assert.match(projectionPage, /new Set<number>/);
   assert.match(projectionPage, /checkedIn\.map/);
@@ -166,6 +173,9 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(policy, /isStaleLiveEventSnapshot/);
   assert.match(auth, /HttpOnly/);
   assert.match(auth, /SameSite=Strict/);
+  assert.match(auth, /ADMIN_COOKIE_NAME = "checkin_pod_admin_session"/);
+  assert.match(auth, /ADMIN_COOKIE_SALT = "checkin-pod-admin-v1"/);
+  assert.match(auth, /LEGACY_ADMIN_COOKIE_NAME/);
   assert.match(workerSource, /ADMIN_PASSWORD/);
   assert.match(workerSource, /clearPublishedLiveEvent/);
   assert.doesNotMatch(workerSource + auth, /llap55688/);

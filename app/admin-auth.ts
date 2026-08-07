@@ -1,6 +1,8 @@
-export const ADMIN_COOKIE_NAME = "arrival_admin_session";
+export const ADMIN_COOKIE_NAME = "checkin_pod_admin_session";
 
-const ADMIN_COOKIE_SALT = "arrival-checkin-admin-v1";
+const ADMIN_COOKIE_SALT = "checkin-pod-admin-v1";
+const LEGACY_ADMIN_COOKIE_NAME = "arrival_admin_session";
+const LEGACY_ADMIN_COOKIE_SALT = "arrival-checkin-admin-v1";
 const encoder = new TextEncoder();
 
 export function cookieValue(request: Request, name: string) {
@@ -26,21 +28,35 @@ export async function sha256Hex(value: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function sessionToken(password: string, salt: string) {
+  return sha256Hex(`${salt}:${password}`);
+}
+
 export async function adminSessionToken(password: string) {
-  return sha256Hex(`${ADMIN_COOKIE_SALT}:${password}`);
+  return sessionToken(password, ADMIN_COOKIE_SALT);
 }
 
 export async function hasValidAdminSession(request: Request, password?: string) {
   if (!password) return false;
-  const suppliedToken = cookieValue(request, ADMIN_COOKIE_NAME) ?? "";
-  const expectedToken = await adminSessionToken(password);
-  return constantTimeEqual(suppliedToken, expectedToken);
+  const suppliedToken = cookieValue(request, ADMIN_COOKIE_NAME);
+  if (suppliedToken) {
+    return constantTimeEqual(suppliedToken, await adminSessionToken(password));
+  }
+  const legacyToken = cookieValue(request, LEGACY_ADMIN_COOKIE_NAME) ?? "";
+  return constantTimeEqual(
+    legacyToken,
+    await sessionToken(password, LEGACY_ADMIN_COOKIE_SALT),
+  );
 }
 
 export function adminCookie(token: string, secure: boolean) {
   return `${ADMIN_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict${secure ? "; Secure" : ""}`;
 }
 
-export function clearAdminCookie(secure: boolean) {
-  return `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
+export function clearAdminCookies(secure: boolean) {
+  const suffix = `; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
+  return [
+    `${ADMIN_COOKIE_NAME}=${suffix}`,
+    `${LEGACY_ADMIN_COOKIE_NAME}=${suffix}`,
+  ];
 }

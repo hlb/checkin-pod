@@ -1,6 +1,6 @@
-# 抵達｜Luma / KKTIX QR 報到台
+# Checkin Pod｜活動報到輔助機
 
-匯入 Luma 或 KKTIX 活動來賓 CSV，以 USB 條碼掃描器完成報到，並把結果匯出成 CSV。完整名單與報到紀錄保存在管理電腦瀏覽器的 IndexedDB；跨裝置投影只同步必要的公開資訊。
+Checkin Pod 是支援 Luma 與 KKTIX 的活動報到輔助機：匯入活動來賓 CSV，以 USB 條碼掃描器完成報到，並把結果匯出成 CSV。完整名單與報到紀錄保存在管理電腦瀏覽器的 IndexedDB；跨裝置投影只同步必要的公開資訊。
 
 ## 啟動
 

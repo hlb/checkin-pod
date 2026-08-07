@@ -302,7 +302,7 @@ export default function ProjectionPage() {
     <main className={`projection-screen ${activated ? "is-active" : "is-paused"}`}>
       <header className="projection-header">
         <div>
-          <span className="projection-kicker">LIVE ENERGY WALL</span>
+          <span className="projection-kicker">CHECKIN POD · LIVE ENERGY WALL</span>
           <strong>{snapshot?.fileName.replace(/\.csv$/i, "") || "全場能量體"}</strong>
         </div>
         <span className={`projection-connection ${connected ? "is-connected" : ""}`}>

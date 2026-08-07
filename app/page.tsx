@@ -497,8 +497,8 @@ export default function Home() {
 
   const downloadSample = () => {
     const link = document.createElement("a");
-    link.href = "/arrival-checkin-sample-150.zip";
-    link.download = "arrival-checkin-sample-150.zip";
+    link.href = "/checkin-pod-sample-150.zip";
+    link.download = "checkin-pod-sample-150.zip";
     link.click();
   };
 
@@ -676,10 +676,10 @@ export default function Home() {
       />
 
       <header className="topbar">
-        <a className="brand" href="#top" aria-label="抵達報到台首頁">
-          <span className="brand-mark">到</span>
-          <span>抵達</span>
-          <span className="brand-subtitle">QR 報到台</span>
+        <a className="brand" href="#top" aria-label="Checkin Pod 首頁">
+          <span className="brand-mark">P</span>
+          <span>Checkin Pod</span>
+          <span className="brand-subtitle">活動報到輔助機</span>
         </a>
         {event ? (
           <div className="top-actions">
@@ -1097,7 +1097,7 @@ export default function Home() {
       )}
 
       <footer>
-        <p><span className="brand-mark small">到</span> 抵達 QR 報到台</p>
+        <p><span className="brand-mark small">P</span> Checkin Pod · 活動報到輔助機</p>
         <p>完整名單保存在這台瀏覽器；投影牆只接收姓名與報到狀態</p>
       </footer>
     </main>

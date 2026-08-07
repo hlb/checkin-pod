@@ -66,14 +66,15 @@ export type LiveEventSnapshot = {
   cue?: ProjectionCue;
 };
 
-export const CHANNEL_NAME = "arrival-checkin-sync";
-const DB_NAME = "arrival-checkin";
+export const CHANNEL_NAME = "checkin-pod-sync";
+const DB_NAME = "checkin-pod";
+const LEGACY_DB_NAME = "arrival-checkin";
 const DB_VERSION = 2;
 const STORE_NAME = "events";
 const ASSET_STORE_NAME = "assets";
 const CURRENT_EVENT_KEY = "current-event";
 const BACKGROUND_IMAGE_KEY = "guest-background";
-const WRITE_LOCK_NAME = "arrival-checkin-write";
+const WRITE_LOCK_NAME = "checkin-pod-write";
 let fallbackWriteQueue: Promise<void> = Promise.resolve();
 
 const FIELD_ALIASES = {
@@ -263,9 +264,9 @@ export function filterEligibleAttendees(attendees: Attendee[]) {
     : attendees;
 }
 
-function openDatabase(): Promise<IDBDatabase> {
+function openDatabase(databaseName = DB_NAME): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(databaseName, DB_VERSION);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
         request.result.createObjectStore(STORE_NAME);
@@ -279,9 +280,9 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export async function readSavedEvent(): Promise<SavedEvent | null> {
-  const database = await openDatabase();
-  const saved = await new Promise<SavedEvent | null>((resolve, reject) => {
+async function readSavedEventFromDatabase(databaseName: string) {
+  const database = await openDatabase(databaseName);
+  return new Promise<SavedEvent | null>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readonly");
     const request = transaction.objectStore(STORE_NAME).get(CURRENT_EVENT_KEY);
     request.onsuccess = () => resolve((request.result as SavedEvent | undefined) ?? null);
@@ -292,6 +293,14 @@ export async function readSavedEvent(): Promise<SavedEvent | null> {
       reject(transaction.error);
     };
   });
+}
+
+export async function readSavedEvent(): Promise<SavedEvent | null> {
+  let saved = await readSavedEventFromDatabase(DB_NAME);
+  if (!saved) {
+    saved = await readSavedEventFromDatabase(LEGACY_DB_NAME);
+    if (saved) await writeSavedEvent(saved);
+  }
   const savedDisplaySettings = saved?.displaySettings;
   const legacyBackground = savedDisplaySettings?.backgroundImageDataUrl;
   if (!saved || !savedDisplaySettings || !legacyBackground) return saved;
@@ -326,25 +335,28 @@ export async function writeSavedEvent(event: SavedEvent) {
 }
 
 export async function clearSavedEvent() {
-  const database = await openDatabase();
-  return new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction([STORE_NAME, ASSET_STORE_NAME], "readwrite");
-    transaction.objectStore(STORE_NAME).delete(CURRENT_EVENT_KEY);
-    transaction.objectStore(ASSET_STORE_NAME).delete(BACKGROUND_IMAGE_KEY);
-    transaction.oncomplete = () => {
-      database.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      database.close();
-      reject(transaction.error);
-    };
-  });
+  const clearDatabase = async (databaseName: string) => {
+    const database = await openDatabase(databaseName);
+    return new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction([STORE_NAME, ASSET_STORE_NAME], "readwrite");
+      transaction.objectStore(STORE_NAME).delete(CURRENT_EVENT_KEY);
+      transaction.objectStore(ASSET_STORE_NAME).delete(BACKGROUND_IMAGE_KEY);
+      transaction.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error);
+      };
+    });
+  };
+  await Promise.all([clearDatabase(DB_NAME), clearDatabase(LEGACY_DB_NAME)]);
 }
 
-export async function readBackgroundImageDataUrl(): Promise<string | null> {
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
+async function readBackgroundImageFromDatabase(databaseName: string) {
+  const database = await openDatabase(databaseName);
+  return new Promise<string | null>((resolve, reject) => {
     const transaction = database.transaction(ASSET_STORE_NAME, "readonly");
     const request = transaction.objectStore(ASSET_STORE_NAME).get(BACKGROUND_IMAGE_KEY);
     request.onsuccess = () => resolve(typeof request.result === "string" ? request.result : null);
@@ -355,6 +367,14 @@ export async function readBackgroundImageDataUrl(): Promise<string | null> {
       reject(transaction.error);
     };
   });
+}
+
+export async function readBackgroundImageDataUrl(): Promise<string | null> {
+  const current = await readBackgroundImageFromDatabase(DB_NAME);
+  if (current) return current;
+  const legacy = await readBackgroundImageFromDatabase(LEGACY_DB_NAME);
+  if (legacy) await writeBackgroundImageDataUrl(legacy);
+  return legacy;
 }
 
 export async function writeBackgroundImageDataUrl(value: string | null) {

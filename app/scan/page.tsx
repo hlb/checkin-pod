@@ -373,7 +373,7 @@ export default function ScanPage() {
   if (!ready) {
     return (
       <main className="guest-screen guest-loading">
-        <span className="brand-mark guest-brand-mark">到</span>
+        <span className="brand-mark guest-brand-mark">P</span>
         <p>正在準備掃描器…</p>
       </main>
     );
@@ -382,7 +382,7 @@ export default function ScanPage() {
   if (!event) {
     return (
       <main className="guest-screen guest-empty">
-        <div className="guest-brand"><span className="brand-mark">到</span><strong>抵達</strong></div>
+        <div className="guest-brand"><span className="brand-mark">P</span><strong>Checkin Pod</strong></div>
         <div className="guest-empty-card">
           <span className="empty-mark">!</span>
           <h1>尚未載入活動名單</h1>
@@ -474,7 +474,7 @@ export default function ScanPage() {
 
       {!backgroundImageDataUrl ? (
         <header className="guest-screen-header">
-          <div className="guest-brand"><span className="brand-mark">到</span><strong>抵達</strong></div>
+          <div className="guest-brand"><span className="brand-mark">P</span><strong>Checkin Pod</strong></div>
         </header>
       ) : null}
 

@@ -4,7 +4,7 @@ import handler from "vinext/server/app-router-entry";
 import {
   adminCookie,
   adminSessionToken,
-  clearAdminCookie,
+  clearAdminCookies,
   hasValidAdminSession,
   sha256Hex,
   constantTimeEqual,
@@ -32,9 +32,11 @@ function isAdminPath(pathname: string) {
   return pathname === "/" || pathname === "/admin" || pathname.startsWith("/admin/");
 }
 
-function redirectToAdmin(cookie?: string) {
+function redirectToAdmin(cookies?: string | string[]) {
   const headers = new Headers({ location: "/admin", "cache-control": "no-store" });
-  if (cookie) headers.set("set-cookie", cookie);
+  for (const cookie of typeof cookies === "string" ? [cookies] : cookies ?? []) {
+    headers.append("set-cookie", cookie);
+  }
   return new Response(null, { status: 303, headers });
 }
 
@@ -55,16 +57,16 @@ function adminLoginPage(message = "", status = 200) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#173b2a" />
-  <title>中控台登入｜抵達</title>
+  <title>Checkin Pod｜中控台登入</title>
   <style>
     *{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;color:#172019;background:#f4f1e8;font-family:Inter,system-ui,-apple-system,"Noto Sans TC","PingFang TC",sans-serif}.card{width:min(420px,100%);padding:38px;background:#fff;border:1px solid #d8d9ce;border-radius:24px 24px 24px 8px;box-shadow:0 24px 80px rgba(29,48,34,.12)}.mark{width:48px;height:48px;display:grid;place-items:center;color:#fff;background:#f46f3a;border-radius:15px 15px 15px 4px;font-size:24px;font-weight:900;transform:rotate(-2deg)}.eyebrow{margin:26px 0 8px;color:#d75225;font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase}h1{margin:0;font-family:Georgia,"Noto Serif TC",serif;font-size:34px}.hint,.error{min-height:24px;margin:10px 0 22px;color:#6f776f;font-size:13px}.error{color:#a43e2e;font-weight:750}label{display:block;margin-bottom:8px;font-size:12px;font-weight:850}input{width:100%;height:50px;padding:0 14px;border:1px solid #cfd4cc;border-radius:11px;background:#fbfaf5;font:inherit;outline:none}input:focus{border-color:#285a40;box-shadow:0 0 0 3px rgba(40,90,64,.13)}button{width:100%;height:50px;margin-top:14px;border:0;border-radius:11px;color:#fff;background:#173b2a;font:inherit;font-weight:850;cursor:pointer}button:hover{background:#0e2d1e}.public-links{margin:24px 0 0;padding-top:20px;border-top:1px solid #e5e4dc;display:flex;gap:18px}.public-links a{color:#526157;font-size:12px;font-weight:750;text-decoration:none}.public-links a:hover{color:#173b2a}
   </style>
 </head>
 <body>
   <main class="card">
-    <div class="mark" aria-hidden="true">到</div>
-    <p class="eyebrow">Staff access</p>
-    <h1>活動中控台</h1>
+    <div class="mark" aria-hidden="true">P</div>
+    <p class="eyebrow">Pod access</p>
+    <h1>Checkin Pod</h1>
     ${error}
     <form method="post" action="/admin-auth">
       <label for="password">工作人員密碼</label>
@@ -112,7 +114,7 @@ const worker = {
           return adminLoginPage("無法結束公開投影，請稍後再試。", 503);
         }
       }
-      return redirectToAdmin(clearAdminCookie(url.protocol === "https:"));
+      return redirectToAdmin(clearAdminCookies(url.protocol === "https:"));
     }
 
     if (url.pathname === "/admin-auth") {

@@ -6,9 +6,9 @@ import { dirname, join, resolve } from "node:path";
 const attendeeCount = 150;
 const checkedInCount = 100;
 const pendingQrCount = 10;
-const packageName = "arrival-checkin-sample-150";
+const packageName = "checkin-pod-sample-150";
 const archivePath = resolve("public", `${packageName}.zip`);
-const workspace = await mkdtemp(join(tmpdir(), "arrival-checkin-sample-"));
+const workspace = await mkdtemp(join(tmpdir(), "checkin-pod-sample-"));
 const packageRoot = join(workspace, packageName);
 const qrDirectory = join(packageRoot, "pending-qrcodes");
 
@@ -41,7 +41,7 @@ try {
   const rows = Array.from({ length: attendeeCount }, (_, index) => {
     const number = index + 1;
     const numberText = pad(number);
-    const qrValue = `https://luma.com/check-in/arrival-demo?pk=arrival-sample-${numberText}`;
+    const qrValue = `https://luma.com/check-in/checkin-pod-demo?pk=checkin-pod-sample-${numberText}`;
     const checkedInAt = number <= checkedInCount
       ? new Date(checkInStart + index * 30_000).toISOString()
       : "";
@@ -68,7 +68,7 @@ try {
 
   for (let number = checkedInCount + 1; number <= checkedInCount + pendingQrCount; number += 1) {
     const numberText = pad(number);
-    const qrValue = `https://luma.com/check-in/arrival-demo?pk=arrival-sample-${numberText}`;
+    const qrValue = `https://luma.com/check-in/checkin-pod-demo?pk=checkin-pod-sample-${numberText}`;
     execFileSync("qrencode", [
       "-l", "H",
       "-m", "4",
@@ -78,7 +78,7 @@ try {
     ]);
   }
 
-  const readme = `抵達｜Luma QR 報到測試包
+  const readme = `Checkin Pod｜Luma QR 報到測試包
 
 內容：
 - luma-sample-150.csv：150 位匿名測試來賓。
