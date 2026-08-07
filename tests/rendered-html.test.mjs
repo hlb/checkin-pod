@@ -75,10 +75,11 @@ test("password-protects the control center while keeping displays public", async
 });
 
 test("wires persistence, scanner, secured projection sync, and event controls", async () => {
-  const [page, scanPage, projectionPage, liveRoute, policy, core, auth, styles, workerSource, sampleZip, successAudio, failureAudio] = await Promise.all([
+  const [page, scanPage, projectionPage, planetVariants, liveRoute, policy, core, auth, styles, workerSource, sampleZip, successAudio, failureAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/projection/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/planet-variants.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/live-event/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/live-event-policy.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/checkin-core.ts", import.meta.url), "utf8"),
@@ -112,6 +113,10 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(projectionPage, /pendingCueRef/);
   assert.match(projectionPage, /new Set<number>/);
   assert.match(projectionPage, /checkedIn\.map/);
+  assert.match(projectionPage, /type-\$\{appearance\.type\}/);
+  assert.match(planetVariants, /PLANET_PALETTES/);
+  assert.match(planetVariants, /PLANET_TYPES/);
+  assert.match(planetVariants, /combinationIndex/);
   assert.match(liveRoute, /hasValidAdminSession/);
   assert.match(liveRoute, /isLiveEventWriterAuthorized/);
   assert.match(policy, /input\.total > 200/);
@@ -122,6 +127,9 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.doesNotMatch(workerSource + auth, /llap55688/);
   assert.match(styles, /\.guest-screen\.has-custom-background\s*\{[^}]*background-size:\s*contain/s);
   assert.match(styles, /@keyframes planetFlyIn/);
+  for (const type of ["rocky", "ringed", "banded", "cratered", "molten", "crystal"]) {
+    assert.match(styles, new RegExp(`\\.energy-planet\\.type-${type}`));
+  }
   assert.ok(sampleZip.length > 10_000);
   assert.ok(successAudio.length > 1_000);
   assert.ok(failureAudio.length > 1_000);

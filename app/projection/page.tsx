@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { LiveEventSnapshot, ProjectionCue } from "../checkin-core";
+import { hashText, planetAppearanceForId } from "../planet-variants";
 
 type LiveAttendee = LiveEventSnapshot["attendees"][number];
 type FloatingName = {
@@ -18,22 +19,6 @@ type Entrance = { key: string; attendee: LiveAttendee };
 const POLL_INTERVAL_MS = 700;
 const ARRIVAL_DISPLAY_MS = 3600;
 const PARTICLE_COLORS = ["#FFD84A", "#57E5E5", "#FF7B68", "#A89BFF", "#6EE7A1"];
-const PLANET_PALETTES = [
-  ["#57E5E5", "#176E83", "#072A3B"],
-  ["#FFD84A", "#D5762C", "#552817"],
-  ["#A89BFF", "#6654C8", "#251F58"],
-  ["#6EE7A1", "#2E956D", "#123D36"],
-  ["#FF8F79", "#CB4F67", "#4D213C"],
-] as const;
-
-function hashText(value: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
 
 function halton(index: number, base: number) {
   let fraction = 1;
@@ -49,7 +34,7 @@ function halton(index: number, base: number) {
 
 function planetStyle(attendee: LiveAttendee, index: number) {
   const hash = hashText(attendee.id);
-  const palette = PLANET_PALETTES[hash % PLANET_PALETTES.length];
+  const palette = planetAppearanceForId(attendee.id).palette;
   let x = 5 + halton(index + 1, 2) * 90;
   const y = 7 + halton(index + 1, 3) * 82;
   if (x > 39 && x < 61 && y > 33 && y < 68) {
@@ -338,14 +323,14 @@ export default function ProjectionPage() {
         {checkedIn.map((attendee, index) => {
           const isArriving = activeEntrance?.attendee.id === attendee.id;
           const isQueued = queuedAttendeeIds.has(attendee.id);
-          const hasRing = hashText(attendee.id) % 4 === 0;
+          const appearance = planetAppearanceForId(attendee.id);
           return (
             <span
-              className={`energy-planet ${hasRing ? "has-ring" : ""} ${isArriving ? "is-arriving" : isQueued ? "is-awaiting-arrival" : ""}`}
+              className={`energy-planet type-${appearance.type} ${isArriving ? "is-arriving" : isQueued ? "is-awaiting-arrival" : ""}`}
               key={attendee.id}
               style={planetStyle(attendee, index)}
-              title={attendee.name}
-              aria-label={`${attendee.name} 的星球`}
+              title={`${attendee.name} · ${appearance.typeLabel}`}
+              aria-label={`${attendee.name} 的${appearance.typeLabel}`}
             />
           );
         })}
