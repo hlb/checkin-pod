@@ -23,6 +23,7 @@ import {
   csvEscape,
   defaultDisplayFields,
   ensureSavedEventWriterToken,
+  filterEligibleAttendees,
   formatTime,
   mutateSavedEvent,
   normalizeHeader,
@@ -370,7 +371,7 @@ export default function Home() {
     async (file: File) => {
       setError("");
       if (!file.name.toLowerCase().endsWith(".csv") && file.type !== "text/csv") {
-        setError("請選擇 Luma 匯出的 CSV 檔案。");
+        setError("請選擇 Luma 或 KKTIX 匯出的 CSV 檔案。");
         return;
       }
       if (event && !window.confirm("匯入新名單會取代目前保存在這台瀏覽器的名單，要繼續嗎？")) {
@@ -383,15 +384,7 @@ export default function Home() {
         const { headers, rows } = parseCsv(source);
         const importedAt = new Date().toISOString();
         const parsedAttendees = toAttendees(rows, importedAt);
-        const approvedValues = new Set(["approved", "accepted", "going", "confirmed"]);
-        const hasApprovalStatuses = parsedAttendees.some((attendee) =>
-          approvedValues.has(attendee.approvalStatus.toLowerCase()),
-        );
-        const attendees = hasApprovalStatuses
-          ? parsedAttendees.filter((attendee) =>
-              approvedValues.has(attendee.approvalStatus.toLowerCase()),
-            )
-          : parsedAttendees;
+        const attendees = filterEligibleAttendees(parsedAttendees);
         if (attendees.length > MAX_ATTENDEES) {
           throw new Error(
             `這個版本最多支援 ${MAX_ATTENDEES} 位可報到來賓，目前檔案有 ${attendees.length} 位。`,
@@ -399,7 +392,7 @@ export default function Home() {
         }
         if (!attendees.some((attendee) => attendee.qrValue)) {
           throw new Error(
-            "找不到 QR Code 欄位。請確認 CSV 包含 qr_code_url、qrcode 或 qr_code 欄位。",
+            "找不到 QR Code 欄位。請確認 Luma CSV 包含 qr_code_url，或 KKTIX CSV 包含 QR Code 序號。",
           );
         }
         const nextEvent: SavedEvent = {
@@ -641,7 +634,7 @@ export default function Home() {
         if (filter === "arrived" && !attendee.checkedInAt) return false;
         if (filter === "pending" && attendee.checkedInAt) return false;
         if (!query) return true;
-        return [attendee.name, attendee.email, attendee.phone, attendee.ticket]
+        return [attendee.name, attendee.email, attendee.phone, attendee.ticket, ...attendee.scanKeys]
           .join(" ")
           .toLowerCase()
           .includes(query);
@@ -671,7 +664,7 @@ export default function Home() {
         accept=".csv,text/csv"
         onChange={handleFileChange}
         className="visually-hidden"
-        aria-label="選擇 Luma CSV 檔案"
+        aria-label="選擇 Luma 或 KKTIX CSV 檔案"
       />
       <input
         ref={backgroundInputRef}
@@ -740,7 +733,7 @@ export default function Home() {
             <p className="eyebrow"><span /> 現場報到，從容開始</p>
             <h1>一掃，就知道<br /><em>誰抵達了。</em></h1>
             <p className="welcome-lead">
-              匯入 Luma 活動名單，接上掃描器就能開始。最多 200 人，報到紀錄保存在這台裝置。
+              匯入 Luma 或 KKTIX 活動名單，接上掃描器就能開始。最多 200 人，報到紀錄保存在這台裝置。
             </p>
             <div className="trust-row">
               <span><b>01</b> 匯入 CSV</span>
@@ -762,7 +755,7 @@ export default function Home() {
           >
             <div className="file-glyph" aria-hidden="true"><span>CSV</span></div>
             <p className="drop-kicker">準備活動名單</p>
-            <h2>{importing ? "正在讀取名單…" : "把 Luma CSV 放到這裡"}</h2>
+            <h2>{importing ? "正在讀取名單…" : "把 Luma / KKTIX CSV 放到這裡"}</h2>
             <p>或從電腦選擇一份檔案</p>
             <button
               className="primary-button"
@@ -790,7 +783,7 @@ export default function Home() {
                 <h1>活動中控台</h1>
                 <p className="file-meta">
                   {event.fileName} · {total} 位可報到
-                  {event.excludedRowCount ? ` · 已略過 ${event.excludedRowCount} 筆非 approved` : ""}
+                  {event.excludedRowCount ? ` · 已略過 ${event.excludedRowCount} 筆不可報到資料` : ""}
                   {` · ${formatTime(event.importedAt, true)} 匯入`}
                 </p>
               </div>

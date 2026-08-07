@@ -36,7 +36,7 @@ test("server-renders the check-in application shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /<html[^>]*lang="zh-Hant"/i);
-  assert.match(html, /<title>抵達｜Luma QR 報到台<\/title>/i);
+  assert.match(html, /<title>抵達｜Luma \/ KKTIX QR 報到台<\/title>/i);
   assert.match(html, /正在還原這台裝置的報到紀錄/);
 });
 

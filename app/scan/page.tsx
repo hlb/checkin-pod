@@ -386,7 +386,7 @@ export default function ScanPage() {
         <div className="guest-empty-card">
           <span className="empty-mark">!</span>
           <h1>尚未載入活動名單</h1>
-          <p>請先由報到人員開啟管理頁並匯入 Luma CSV。</p>
+          <p>請先由報到人員開啟管理頁並匯入 Luma 或 KKTIX CSV。</p>
           <a href="/admin">前往管理頁</a>
         </div>
       </main>

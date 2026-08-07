@@ -77,13 +77,13 @@ const WRITE_LOCK_NAME = "arrival-checkin-write";
 let fallbackWriteQueue: Promise<void> = Promise.resolve();
 
 const FIELD_ALIASES = {
-  name: ["name", "full_name", "guest_name", "attendee_name", "姓名", "名字"],
+  name: ["name", "full_name", "guest_name", "attendee_name", "姓名", "名字", "聯絡人_姓名"],
   firstName: ["first_name", "firstname", "given_name", "名"],
   lastName: ["last_name", "lastname", "family_name", "姓"],
-  email: ["email", "email_address", "guest_email", "電子郵件", "信箱"],
-  phone: ["phone", "phone_number", "mobile", "mobile_phone", "電話", "手機"],
+  email: ["email", "email_address", "guest_email", "電子郵件", "信箱", "聯絡人_email"],
+  phone: ["phone", "phone_number", "mobile", "mobile_phone", "電話", "手機", "聯絡人_手機"],
   ticket: ["ticket_name", "ticket_type", "ticket", "票種", "票券"],
-  approval: ["approval_status", "status", "guest_status", "報名狀態"],
+  approval: ["approval_status", "status", "guest_status", "報名狀態", "票券付款狀態"],
   qr: [
     "qr_code_url",
     "qrcode_url",
@@ -95,11 +95,21 @@ const FIELD_ALIASES = {
     "ticket_key",
     "qr",
     "報到碼",
+    "qr_code_序號",
   ],
-  checkedAt: ["checked_in_at", "check_in_at", "checkin_at", "check_in_time", "報到時間"],
+  checkedAt: ["checked_in_at", "check_in_at", "checkin_at", "check_in_time", "報到時間", "attendance_book"],
   checked: ["checked_in", "check_in_status", "checkin_status", "已報到"],
   ticketId: ["ticket_api_id", "ticket_id", "guest_api_id", "guest_id", "id"],
+  alternateScanKeys: ["訂單編號", "報名序號", "檢查碼"],
 } as const;
+
+const ELIGIBLE_APPROVAL_STATUSES = new Set([
+  "approved",
+  "accepted",
+  "going",
+  "confirmed",
+  "paid",
+]);
 
 export function normalizeHeader(value: string) {
   return value
@@ -194,6 +204,15 @@ function looksChecked(value: string) {
   );
 }
 
+function normalizeCheckedInAt(value: string) {
+  const kktixTimestamp = value.match(
+    /^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+([+-]\d{2})(\d{2})$/,
+  );
+  return kktixTimestamp
+    ? `${kktixTimestamp[1]}T${kktixTimestamp[2]}${kktixTimestamp[3]}:${kktixTimestamp[4]}`
+    : value;
+}
+
 export function toAttendees(rows: OriginalRow[], importedAt: string): Attendee[] {
   return rows.map((original, index) => {
     const firstName = getField(original, FIELD_ALIASES.firstName);
@@ -210,6 +229,10 @@ export function toAttendees(rows: OriginalRow[], importedAt: string): Attendee[]
     const scanKeys = new Set(scanKeysFor(qrValue));
     if (email) scanKeys.add(email.toLowerCase());
     if (externalId) scanKeys.add(externalId.toLowerCase());
+    for (const alias of FIELD_ALIASES.alternateScanKeys) {
+      const value = getField(original, [alias]);
+      if (value) scanKeys.add(value.toLowerCase());
+    }
     return {
       id: `${externalId || qrValue || email || "guest"}-${index}`,
       name,
@@ -219,10 +242,25 @@ export function toAttendees(rows: OriginalRow[], importedAt: string): Attendee[]
       approvalStatus: getField(original, FIELD_ALIASES.approval),
       qrValue,
       scanKeys: [...scanKeys],
-      checkedInAt: checkedAt || (looksChecked(checkedValue) ? importedAt : null),
+      checkedInAt: checkedAt
+        ? normalizeCheckedInAt(checkedAt)
+        : looksChecked(checkedValue)
+          ? importedAt
+          : null,
       original,
     };
   });
+}
+
+export function filterEligibleAttendees(attendees: Attendee[]) {
+  const hasRecognizedStatus = attendees.some((attendee) =>
+    ELIGIBLE_APPROVAL_STATUSES.has(attendee.approvalStatus.toLowerCase()),
+  );
+  return hasRecognizedStatus
+    ? attendees.filter((attendee) =>
+        ELIGIBLE_APPROVAL_STATUSES.has(attendee.approvalStatus.toLowerCase()),
+      )
+    : attendees;
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -522,9 +560,11 @@ export async function publishProjectionCue(type: ProjectionCueType) {
 }
 
 export function defaultDisplayFields(headers: string[]) {
-  const preferred = ["name", "ticket_name", "email"];
+  const preferred = [FIELD_ALIASES.name, FIELD_ALIASES.ticket, FIELD_ALIASES.email];
   const selected = preferred
-    .map((wanted) => headers.find((header) => normalizeHeader(header) === wanted))
+    .map((aliases) => headers.find((header) =>
+      aliases.some((alias) => normalizeHeader(header) === alias),
+    ))
     .filter((header): header is string => Boolean(header));
   if (selected.length) return selected;
   return headers
@@ -543,10 +583,10 @@ export function displayValue(attendee: Attendee, field: string) {
 
 export function labelForField(field: string) {
   const normalized = normalizeHeader(field);
-  if (normalized === "name") return "姓名";
-  if (normalized === "email") return "Email";
-  if (normalized === "phone_number" || normalized === "phone") return "電話";
-  if (normalized === "ticket_name" || normalized === "ticket_type") return "票種";
+  if (FIELD_ALIASES.name.some((alias) => alias === normalized)) return "姓名";
+  if (FIELD_ALIASES.email.some((alias) => alias === normalized)) return "Email";
+  if (FIELD_ALIASES.phone.some((alias) => alias === normalized)) return "電話";
+  if (FIELD_ALIASES.ticket.some((alias) => alias === normalized)) return "票種";
   return field;
 }
 

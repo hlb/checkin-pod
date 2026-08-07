@@ -1,6 +1,6 @@
-# 抵達｜Luma QR 報到台
+# 抵達｜Luma / KKTIX QR 報到台
 
-匯入 Luma 活動來賓 CSV，以 USB 條碼掃描器完成報到，並把結果匯出成 CSV。完整名單與報到紀錄保存在管理電腦瀏覽器的 IndexedDB；跨裝置投影只同步必要的公開資訊。
+匯入 Luma 或 KKTIX 活動來賓 CSV，以 USB 條碼掃描器完成報到，並把結果匯出成 CSV。完整名單與報到紀錄保存在管理電腦瀏覽器的 IndexedDB；跨裝置投影只同步必要的公開資訊。
 
 ## 啟動
 
@@ -25,7 +25,7 @@ npm run dev
 
 ## 現場使用
 
-1. 匯入 Luma 匯出的 CSV；程式會辨識 `qr_code_url`，並在有 `approval_status` 時只納入 `approved` 來賓。
+1. 匯入 Luma 或 KKTIX 匯出的 CSV。Luma 會辨識 `qr_code_url` 與 `approval_status`；KKTIX 會辨識 `QR Code 序號`、`票券付款狀態` 與 `Attendance Book`，只納入可報到的 `approved`／`paid` 來賓並保留既有報到時間。
 2. 在管理畫面的「來賓畫面顯示內容」勾選掃描成功後要顯示的 CSV 欄位。
 3. 開啟來賓掃描畫面，將 XD-2002W 維持在 USB 鍵盤模式。建議設定掃描結尾為 Enter；即使沒有 Enter，完整代碼停頓 0.1 秒後也會自動送出。報到成功／失敗提示音預設關閉，可在右上角「掃描設定」中開啟。
 4. 掃描成功後，來賓畫面會顯示所選資料；管理畫面也會同步顯示目前掃描的人並更新名單。
