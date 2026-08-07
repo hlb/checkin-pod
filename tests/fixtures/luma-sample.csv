@@ -1,0 +1,2 @@
+guest_id,name,first_name,last_name,email,phone_number,created_at,approval_status,checked_in_at,qr_code_url,ticket_name
+gst-demo-1,王小明,小明,王,ming@example.com,,2026-08-01T09:00:00.000Z,approved,,https://luma.com/check-in/demo?pk=demo-001,Standard
