@@ -77,7 +77,7 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 - 單機與多機都不提供離線掃描、背景批次同步或手動同步。
 - 網路失敗時明確顯示錯誤，該次掃描需要重新執行。
 - 載入歷史活動需要明確切換目前活動。
-- 永久刪除需要有效管理 session 與活動專屬確認字串。
+- 永久刪除需要有效管理 session，並要求複製貼上活動 Event ID。
 - 刪除活動需要由外鍵 cascade 清除 attendees、scan keys、lanes 與 activity。
 
 ## 瀏覽器儲存

@@ -277,7 +277,7 @@ export default function Home() {
   const [deleteCandidate, setDeleteCandidate] = useState<SharedEventHistoryItem | null>(null);
   const [deletionInput, setDeletionInput] = useState("");
   const [deletionPasted, setDeletionPasted] = useState(false);
-  const [deletionCopyLabel, setDeletionCopyLabel] = useState("複製確認字串");
+  const [deletionCopyLabel, setDeletionCopyLabel] = useState("複製 Event ID");
   const scanInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
@@ -985,7 +985,7 @@ export default function Home() {
     setDeleteCandidate(historyEvent);
     setDeletionInput("");
     setDeletionPasted(false);
-    setDeletionCopyLabel("複製確認字串");
+    setDeletionCopyLabel("複製 Event ID");
     window.setTimeout(() => deletionInputRef.current?.focus(), 0);
   };
 
@@ -1002,7 +1002,7 @@ export default function Home() {
       await navigator.clipboard.writeText(eventDeletionConfirmation(deleteCandidate.eventId));
       setDeletionCopyLabel("已複製，請貼到下方");
     } catch {
-      setDeletionCopyLabel("請選取字串並複製");
+      setDeletionCopyLabel("請選取 Event ID 並複製");
     }
   };
 
@@ -1791,21 +1791,21 @@ export default function Home() {
             </p>
             {deleteCandidate.eventId === currentServerEventId ? <p className="event-delete-current-note">這是目前裝置使用的活動。本機活動資料也會一併清除。</p> : null}
             <div className="event-delete-confirmation">
-              <span>步驟 1：複製確認字串</span>
+              <span>步驟 1：複製 Event ID</span>
               <div>
                 <code>{eventDeletionConfirmation(deleteCandidate.eventId)}</code>
                 <button type="button" onClick={() => void copyDeletionConfirmation()}>{deletionCopyLabel}</button>
               </div>
             </div>
             <label className="event-delete-input" htmlFor="event-delete-confirmation-input">
-              <span>步驟 2：貼上確認字串</span>
+              <span>步驟 2：貼上 Event ID</span>
               <input
                 id="event-delete-confirmation-input"
                 ref={deletionInputRef}
                 value={deletionInput}
                 onChange={(changeEvent) => setDeletionInput(changeEvent.target.value)}
                 onPaste={() => setDeletionPasted(true)}
-                placeholder="請貼上確認字串"
+                placeholder="請貼上 Event ID"
                 autoComplete="off"
                 spellCheck={false}
               />

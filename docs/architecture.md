@@ -231,7 +231,7 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 | rate limit | API 回覆 429 與 `Retry-After: 60` | 等待 60 秒後重新掃描 |
 | 本機名單遺失 | 中控台讀取活動歷史 | 從 D1 分頁復原最小化資料 |
 | 投影中斷 | 投影頁輪詢公開 feed | 重新連線後取得 snapshot 或 changes |
-| 誤刪風險 | UI 要求貼上活動專屬字串 | D1 cascade 永久刪除 |
+| 誤刪風險 | UI 要求複製貼上活動 Event ID | D1 cascade 永久刪除 |
 | 排程未執行 | request path 補做到期清理 | 檢查 Cron Trigger 與 Worker logs |
 
 ## 11. 已知限制與剩餘風險

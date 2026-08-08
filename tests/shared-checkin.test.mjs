@@ -73,11 +73,12 @@ test("enforces attendee and lane relationships in the runtime schema", () => {
   database.close();
 });
 
-test("requires the exact event-specific confirmation string for permanent deletion", () => {
+test("requires the exact event ID for permanent deletion", () => {
   const confirmation = eventDeletionConfirmation("event-1");
-  assert.equal(confirmation, "永久刪除活動 event-1");
+  assert.equal(confirmation, "event-1");
   assert.equal(isEventDeletionConfirmed("event-1", confirmation), true);
   assert.equal(isEventDeletionConfirmed("event-1", ""), false);
+  assert.equal(isEventDeletionConfirmed("event-1", "永久刪除活動 event-1"), false);
   assert.equal(isEventDeletionConfirmed("event-1", eventDeletionConfirmation("event-2")), false);
 });
 

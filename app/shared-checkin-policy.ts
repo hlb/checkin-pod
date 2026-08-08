@@ -8,7 +8,7 @@ export function defaultEventName(fileName: string) {
 }
 
 export function eventDeletionConfirmation(eventId: string) {
-  return `永久刪除活動 ${eventId}`;
+  return eventId;
 }
 
 export function isEventDeletionConfirmed(eventId: string, confirmation: string) {

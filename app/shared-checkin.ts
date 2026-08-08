@@ -154,7 +154,7 @@ async function apiJson<T extends JsonResponse>(input: RequestInfo | URL, init?: 
       attendee_limit_exceeded: `活動最多支援 ${MAX_SHARED_ATTENDEES.toLocaleString()} 位來賓。`,
       duplicate_scan_key: "名單中有重複的 QR Code 或報到碼，請修正 CSV 後再匯入。",
       invalid_payload: "傳送的活動資料格式不正確。",
-      deletion_confirmation_mismatch: "確認字串不正確，活動尚未刪除。",
+      deletion_confirmation_mismatch: "Event ID 不正確，活動尚未刪除。",
       lane_not_found: "找不到這個工作站。",
       lane_limit_exceeded: `每場活動最多支援 ${MAX_SHARED_LANES} 個工作站。`,
     };
