@@ -82,6 +82,7 @@ function adminLoginPage(message = "", status = 200) {
       <button type="submit">進入中控台</button>
     </form>
     <nav class="public-links" aria-label="公開畫面">
+      <a href="/benchmark">效能實測 ↗</a>
       <a href="/scan">來賓畫面 ↗</a>
       <a href="/projection">投影畫面 ↗</a>
     </nav>

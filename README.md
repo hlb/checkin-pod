@@ -41,4 +41,4 @@ npm run dev
 npm test
 ```
 
-如需重新產生 150 人範例 ZIP，請先安裝系統指令 `qrencode` 與 `zip`，再執行 `npm run sample:generate`。
+如需重新產生 150 人與 10,000 人範例 ZIP，請先安裝系統指令 `qrencode` 與 `zip`，再執行 `npm run sample:generate`。兩份範例的前 150 位來賓使用相同 QR Code，ZIP 內第 101–110 位的測試 QR 圖可共用。

@@ -255,7 +255,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .drop-card h2 { margin: 0; font-family: Georgia, "Noto Serif TC", serif; font-size: 28px; letter-spacing: -.02em; }
 .drop-card > p:not(.drop-kicker) { margin: 10px 0 23px; color: var(--muted); font-size: 14px; }
 .drop-card .primary-button { min-width: 190px; }
-.sample-link { margin-top: 12px; border: 0; background: transparent; color: #597062; font-size: 12px; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; }
+.sample-downloads { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 7px 15px; }
+.sample-link { border: 0; background: transparent; color: #597062; font-size: 12px; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; }
+.sample-note { display: block; margin-top: 7px; color: #7a857c; font-size: 10px; }
 .privacy-note {
   width: calc(100% - 56px);
   margin-top: 34px;

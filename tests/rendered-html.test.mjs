@@ -40,17 +40,24 @@ test("server-renders the check-in application shell", async () => {
   assert.match(html, /正在還原這台裝置的報到紀錄/);
 });
 
-test("provides separate admin, guest scanner, and projection routes", async () => {
+test("provides separate admin and public benchmark, scanner, and projection routes", async () => {
   const cookie = await adminCookie();
-  const [adminResponse, scanResponse, projectionResponse] = await Promise.all([
+  const [adminResponse, benchmarkResponse, scanResponse, projectionResponse] = await Promise.all([
     render("/admin", { headers: { cookie } }),
+    render("/benchmark"),
     render("/scan"),
     render("/projection"),
   ]);
   assert.equal(adminResponse.status, 200);
+  assert.equal(benchmarkResponse.status, 200);
   assert.equal(scanResponse.status, 200);
   assert.equal(projectionResponse.status, 200);
   assert.match(await adminResponse.text(), /正在還原這台裝置的報到紀錄/);
+  const benchmarkHtml = await benchmarkResponse.text();
+  assert.match(benchmarkHtml, /10,000 位來賓/);
+  assert.match(benchmarkHtml, /50 個入口/);
+  assert.match(benchmarkHtml, /21\/21/);
+  assert.doesNotMatch(benchmarkHtml, /工作人員密碼/);
   assert.match(await scanResponse.text(), /正在準備掃描器/);
   assert.match(await projectionResponse.text(), /啟動全場能量牆/);
 });
@@ -123,7 +130,7 @@ test("an unauthenticated logout request cannot clear the public projection", asy
 });
 
 test("wires persistence, scanner, secured projection sync, and event controls", async () => {
-  const [page, scanPage, projectionPage, planetVariants, liveRoute, sharedRoute, sharedSql, policy, core, auth, styles, workerSource, sampleZip, successAudio, failureAudio] = await Promise.all([
+  const [page, scanPage, projectionPage, planetVariants, liveRoute, sharedRoute, sharedSql, policy, core, auth, styles, workerSource, sampleZip, largeSampleZip, successAudio, failureAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/projection/page.tsx", import.meta.url), "utf8"),
@@ -137,6 +144,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../public/checkin-pod-sample-150.zip", import.meta.url)),
+    readFile(new URL("../public/checkin-pod-sample-10000.zip", import.meta.url)),
     readFile(new URL("../public/audio/checkin-success.mp3", import.meta.url)),
     readFile(new URL("../public/audio/checkin-failure.mp3", import.meta.url)),
   ]);
@@ -145,6 +153,9 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(page, /GUESTS_PER_PAGE = 100/);
   assert.match(page, /新增報到工作站/);
   assert.match(page, /checkin-pod-sample-150\.zip/);
+  assert.match(page, /checkin-pod-sample-10000\.zip/);
+  assert.match(page, /兩份範例共用同一組測試 QR Code/);
+  assert.match(page, /登出中控台/);
   assert.match(page, /Checkin Pod/);
   assert.match(page, /commitScan/);
   assert.match(scanPage, /commitScan/);
@@ -195,6 +206,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(auth, /ADMIN_COOKIE_SALT = "checkin-pod-admin-v1"/);
   assert.match(auth, /LEGACY_ADMIN_COOKIE_NAME/);
   assert.match(workerSource, /ADMIN_PASSWORD/);
+  assert.match(workerSource, /href="\/benchmark"/);
   assert.match(workerSource, /clearPublishedLiveEvent/);
   assert.doesNotMatch(workerSource + auth, /llap55688/);
   assert.match(styles, /\.guest-screen\.has-custom-background\s*\{[^}]*background-size:\s*contain/s);
@@ -203,6 +215,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
     assert.match(styles, new RegExp(`\\.energy-planet\\.type-${type}`));
   }
   assert.ok(sampleZip.length > 10_000);
+  assert.ok(largeSampleZip.length > 100_000);
   assert.ok(successAudio.length > 1_000);
   assert.ok(failureAudio.length > 1_000);
 });

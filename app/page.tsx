@@ -725,10 +725,13 @@ export default function Home() {
     }
   };
 
-  const downloadSample = () => {
+  const downloadSample = (attendeeCount: 150 | 10_000) => {
+    const fileName = attendeeCount === 150
+      ? "checkin-pod-sample-150.zip"
+      : "checkin-pod-sample-10000.zip";
     const link = document.createElement("a");
-    link.href = "/checkin-pod-sample-150.zip";
-    link.download = "checkin-pod-sample-150.zip";
+    link.href = `/${fileName}`;
+    link.download = fileName;
     link.click();
   };
 
@@ -1011,42 +1014,48 @@ export default function Home() {
           <span>Checkin Pod</span>
           <span className="brand-subtitle">活動報到輔助機</span>
         </a>
-        {event ? (
-          <div className="top-actions">
-            <span className="saved-pill"><i /> {event.sharedEvent ? "多工作站同步中" : "已儲存在此裝置"}</span>
-            <a className="display-button" href="/scan" target="_blank" rel="noreferrer">
-              開啟來賓畫面 <span aria-hidden="true">↗</span>
-            </a>
-            <a className="display-button projection-link" href="/projection" target="_blank" rel="noreferrer">
-              開啟投影牆 <span aria-hidden="true">↗</span>
-            </a>
-            <button className="export-button" type="button" disabled={exporting} onClick={() => void exportCsv()}>
-              <span aria-hidden="true">↓</span> {exporting ? "正在取得最新紀錄…" : "匯出結果"}
-            </button>
-            <div className="menu-wrap">
-              <button
-                type="button"
-                className="icon-button"
-                aria-label="更多選項"
-                aria-expanded={showMenu}
-                onClick={() => setShowMenu((current) => !current)}
-              >
-                •••
+        <div className="top-actions">
+          {event ? (
+            <>
+              <span className="saved-pill"><i /> {event.sharedEvent ? "多工作站同步中" : "已儲存在此裝置"}</span>
+              <a className="display-button" href="/scan" target="_blank" rel="noreferrer">
+                開啟來賓畫面 <span aria-hidden="true">↗</span>
+              </a>
+              <a className="display-button projection-link" href="/projection" target="_blank" rel="noreferrer">
+                開啟投影牆 <span aria-hidden="true">↗</span>
+              </a>
+              <button className="export-button" type="button" disabled={exporting} onClick={() => void exportCsv()}>
+                <span aria-hidden="true">↓</span> {exporting ? "正在取得最新紀錄…" : "匯出結果"}
               </button>
-              {showMenu ? (
-                <div className="menu-popover">
-                  <button type="button" onClick={replaceList}>匯入新名單</button>
-                  <button type="button" className="danger-item" onClick={() => void removeList()}>
-                    清除本機紀錄
-                  </button>
-                  <form method="post" action="/admin-auth/logout">
-                    <button className="logout-item" type="submit">登出中控台</button>
-                  </form>
-                </div>
-              ) : null}
-            </div>
+            </>
+          ) : null}
+          <div className="menu-wrap">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="更多選項"
+              aria-expanded={showMenu}
+              onClick={() => setShowMenu((current) => !current)}
+            >
+              •••
+            </button>
+            {showMenu ? (
+              <div className="menu-popover">
+                {event ? (
+                  <>
+                    <button type="button" onClick={replaceList}>匯入新名單</button>
+                    <button type="button" className="danger-item" onClick={() => void removeList()}>
+                      清除本機紀錄
+                    </button>
+                  </>
+                ) : null}
+                <form method="post" action="/admin-auth/logout">
+                  <button className="logout-item" type="submit">登出中控台</button>
+                </form>
+              </div>
+            ) : null}
           </div>
-        ) : null}
+        </div>
       </header>
 
       {error ? (
@@ -1095,9 +1104,15 @@ export default function Home() {
             >
               {importing ? `同步名單中${importProgress ? ` · ${importProgress}%` : "…"}` : "選擇 CSV 檔案"}
             </button>
-            <button className="sample-link" type="button" onClick={downloadSample}>
-              先下載欄位範例（150 人 ZIP）
-            </button>
+            <div className="sample-downloads">
+              <button className="sample-link" type="button" onClick={() => downloadSample(150)}>
+                下載 150 人範例（ZIP）
+              </button>
+              <button className="sample-link" type="button" onClick={() => downloadSample(10_000)}>
+                下載 10,000 人範例（ZIP）
+              </button>
+            </div>
+            <small className="sample-note">兩份範例共用同一組測試 QR Code</small>
             {recoverableEvent ? (
               <div className="restore-event-card">
                 <div>
