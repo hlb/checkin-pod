@@ -211,7 +211,7 @@ test("adds browser security headers to public and administrative routes", async 
 });
 
 test("wires persistence, scanner, secured projection sync, and event controls", async () => {
-  const [page, scanPage, projectionPage, planetVariants, sharedRoute, sharedSql, sharedClient, core, auth, laneAuth, styles, workerSource, viteConfig, stressScript, sampleZip, largeSampleZip, successAudio, failureAudio] = await Promise.all([
+  const [page, scanPage, projectionPage, planetVariants, sharedRoute, sharedSql, sharedClient, core, auth, laneAuth, styles, benchmarkStyles, workerSource, viteConfig, stressScript, sampleZip, largeSampleZip, successAudio, failureAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/projection/page.tsx", import.meta.url), "utf8"),
@@ -223,6 +223,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
     readFile(new URL("../app/admin-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/lane-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/benchmark/benchmark.module.css", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../scripts/stress-multi-client.mjs", import.meta.url), "utf8"),
@@ -362,6 +363,9 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(stressScript, /activate_lane/);
   assert.match(stressScript, /responseCookie/);
   assert.doesNotMatch(workerSource + auth, /llap55688/);
+  const sub18PxFontSize = /font-size:\s*(?:(?:[0-9]|1[0-7])(?:\.[0-9]+)?px|clamp\((?:[0-9]|1[0-7])(?:\.[0-9]+)?px)/;
+  assert.doesNotMatch(styles + benchmarkStyles + workerSource, sub18PxFontSize);
+  assert.match(styles + benchmarkStyles + workerSource, /font-size:\s*18px/);
   assert.match(styles, /\.guest-screen\.has-custom-background\s*\{[^}]*background-size:\s*contain/s);
   assert.match(styles, /\.guest-scan-content\.has-camera/);
   assert.match(styles, /\.camera-scan-status\.success/);

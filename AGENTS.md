@@ -95,6 +95,7 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 - 使用簡單肯定句。
 - 全站使用 `Inter Variable` 與 `Noto Sans TC Variable` 自託管字型。數字使用等寬數字設定。
 - 品牌主色使用 `#FF9E1B`、`#FFD23F`、`#0E0F12`、`#F4F1E8`、`#57D98A` 與 `#FF6B5E`。共用色彩從 `app/globals.css` 的 design tokens 取用。
+- 可讀文字的 CSS `font-size` 不得小於 `18px`。大型標題與數字維持原有視覺層級。
 - 操作按鈕使用明確動詞。
 - 錯誤訊息說明目前狀態與下一步。
 - 掃描成功、重複與未知結果需要有清楚且互異的視覺狀態。
