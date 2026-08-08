@@ -27,6 +27,15 @@ export type DisplaySettings = {
   backgroundColor?: string;
 };
 
+export type CheckInMode = "single" | "multi";
+
+export type SingleSyncState = {
+  eventId: string;
+  cursor: number;
+  lastSyncedAt: string;
+  lastSyncedSignature: string;
+};
+
 export type SavedEvent = {
   version: 1;
   fileName: string;
@@ -39,6 +48,8 @@ export type SavedEvent = {
   lastScan?: LastScan;
   revision?: number;
   writerToken?: string;
+  checkInMode?: CheckInMode;
+  singleSync?: SingleSyncState;
   sharedEvent?: import("./shared-checkin").SharedEventConnection;
 };
 
@@ -302,17 +313,27 @@ export async function readSavedEvent(): Promise<SavedEvent | null> {
     saved = await readSavedEventFromDatabase(LEGACY_DB_NAME);
     if (saved) await writeSavedEvent(saved);
   }
-  const savedDisplaySettings = saved?.displaySettings;
+  if (!saved) return null;
+
+  let migrated = saved;
+  let changed = false;
+  const savedDisplaySettings = saved.displaySettings;
   const legacyBackground = savedDisplaySettings?.backgroundImageDataUrl;
-  if (!saved || !savedDisplaySettings || !legacyBackground) return saved;
-  await writeBackgroundImageDataUrl(legacyBackground);
-  const displaySettings: DisplaySettings = {
-    ...savedDisplaySettings,
-    selectedFields: savedDisplaySettings.selectedFields ?? defaultDisplayFields(saved.headers),
-  };
-  delete displaySettings.backgroundImageDataUrl;
-  const migrated = { ...saved, displaySettings };
-  await writeSavedEvent(migrated);
+  if (savedDisplaySettings && legacyBackground) {
+    await writeBackgroundImageDataUrl(legacyBackground);
+    const displaySettings: DisplaySettings = {
+      ...savedDisplaySettings,
+      selectedFields: savedDisplaySettings.selectedFields ?? defaultDisplayFields(saved.headers),
+    };
+    delete displaySettings.backgroundImageDataUrl;
+    migrated = { ...migrated, displaySettings };
+    changed = true;
+  }
+  if (!migrated.checkInMode) {
+    migrated = { ...migrated, checkInMode: migrated.sharedEvent ? "multi" : "single" };
+    changed = true;
+  }
+  if (changed) await writeSavedEvent(migrated);
   return migrated;
 }
 
@@ -455,7 +476,7 @@ export async function replaceSavedEvent(event: SavedEvent) {
   };
   await withEventWriteLock(() => writeSavedEvent(prepared));
   broadcastEventChange();
-  const projectionSync = event.sharedEvent
+  const projectionSync = event.sharedEvent || event.checkInMode === "single"
     ? Promise.resolve(true)
     : publishLiveEvent(prepared).then(() => true, () => false);
   return { event: prepared, projectionSync };
@@ -506,7 +527,9 @@ export async function commitScan(rawCode: string, scannedAt = new Date().toISOSt
     return next;
   });
   broadcastEventChange();
-  const projectionSync = publishLiveEvent(committed.event).then(() => true, () => false);
+  const projectionSync = committed.event.checkInMode === "single"
+    ? Promise.resolve(true)
+    : publishLiveEvent(committed.event).then(() => true, () => false);
   return { ...committed, projectionSync };
 }
 
@@ -531,7 +554,9 @@ export async function commitAttendeeCheckIn(attendeeId: string, checkedInAt: str
     return { event: next, attendee: updatedAttendee };
   });
   broadcastEventChange();
-  const projectionSync = publishLiveEvent(committed.event).then(() => true, () => false);
+  const projectionSync = committed.event.checkInMode === "single"
+    ? Promise.resolve(true)
+    : publishLiveEvent(committed.event).then(() => true, () => false);
   return { ...committed, projectionSync };
 }
 

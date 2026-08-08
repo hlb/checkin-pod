@@ -5,6 +5,7 @@ export const SHARED_SCHEMA_SQL = [
     headers_json TEXT NOT NULL,
     selected_fields_json TEXT NOT NULL,
     background_color TEXT NOT NULL DEFAULT '#0E0F12',
+    sync_mode TEXT NOT NULL DEFAULT 'multi' CHECK(sync_mode IN ('single', 'multi')),
     total INTEGER NOT NULL DEFAULT 0 CHECK(total >= 0 AND total <= 10000),
     status TEXT NOT NULL DEFAULT 'importing' CHECK(status IN ('importing', 'active')),
     active INTEGER NOT NULL DEFAULT 0 CHECK(active IN (0, 1)),

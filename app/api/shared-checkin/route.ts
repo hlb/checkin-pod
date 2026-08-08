@@ -12,6 +12,7 @@ type EventRow = {
   headers_json: string;
   selected_fields_json: string;
   background_color: string;
+  sync_mode: "single" | "multi";
   total: number;
   status: string;
   cue_id: string | null;
@@ -130,12 +131,13 @@ async function adminEventMetadata(database: D1Database, event: EventRow) {
     backgroundColor: event.background_color,
     total: event.total,
     cursor: cursor?.cursor ?? 0,
+    syncMode: event.sync_mode,
   };
 }
 
 async function findAdminEvent(database: D1Database, requestedEventId = "") {
   const selection = `SELECT event_id, file_name, headers_json, selected_fields_json,
-      background_color, total, status, cue_id, cue_type, cue_at, created_at, updated_at
+      background_color, sync_mode, total, status, cue_id, cue_type, cue_at, created_at, updated_at
     FROM checkin_events`;
   return requestedEventId
     ? database.prepare(`${selection} WHERE event_id = ? AND status = 'active' LIMIT 1`)
@@ -169,7 +171,8 @@ async function laneForRequest(
   if (!eventId || !laneId || !laneToken) return null;
   const tokenHash = await sha256Hex(laneToken);
   return database.prepare(`SELECT l.lane_id, l.name, e.event_id, e.file_name, e.headers_json,
-      e.selected_fields_json, e.background_color, e.total, e.status, e.cue_id, e.cue_type, e.cue_at
+      e.selected_fields_json, e.background_color, e.sync_mode, e.total, e.status,
+      e.cue_id, e.cue_type, e.cue_at
     FROM checkin_lanes l
     JOIN checkin_events e ON e.event_id = l.event_id
     WHERE l.event_id = ? AND l.lane_id = ? AND l.token_hash = ? AND l.revoked_at IS NULL
@@ -232,10 +235,13 @@ async function handleBeginImport(request: Request, body: Record<string, unknown>
   const headers = validStringArray(body.headers, 250, 240);
   const selectedFields = validStringArray(body.selectedFields, 30, 240) ?? [];
   const expectedTotal = Number(body.expectedTotal);
+  const syncMode = body.syncMode === undefined || body.syncMode === "multi"
+    ? "multi"
+    : body.syncMode === "single" ? "single" : null;
   const backgroundColor = /^#[0-9a-f]{6}$/i.test(safeText(body.backgroundColor, 7))
     ? safeText(body.backgroundColor, 7).toUpperCase()
     : "#0E0F12";
-  if (!fileName || !headers || !Number.isInteger(expectedTotal) || expectedTotal < 1) {
+  if (!fileName || !headers || !syncMode || !Number.isInteger(expectedTotal) || expectedTotal < 1) {
     return noStoreJson({ error: "invalid_payload" }, { status: 400 });
   }
   if (expectedTotal > MAX_SHARED_ATTENDEES) {
@@ -250,10 +256,10 @@ async function handleBeginImport(request: Request, body: Record<string, unknown>
   await database.batch([
     database.prepare(`INSERT INTO checkin_events
         (event_id, file_name, headers_json, selected_fields_json, background_color,
-          total, status, active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'importing', 0, ?, ?)`)
+          sync_mode, total, status, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'importing', 0, ?, ?)`)
       .bind(eventId, fileName, JSON.stringify(headers), JSON.stringify(selectedFields),
-        backgroundColor, expectedTotal, now, now),
+        backgroundColor, syncMode, expectedTotal, now, now),
     database.prepare(`INSERT INTO checkin_lanes
         (lane_id, event_id, name, token_hash, created_at)
       VALUES (?, ?, ?, ?, ?)`)
@@ -412,6 +418,55 @@ async function handleSetAttendee(request: Request, body: Record<string, unknown>
   return noStoreJson({ attendee: row ? attendeeFromRow(row) : attendeeFromRow(existing), cursor: activity?.id ?? 0 });
 }
 
+async function handleSingleSync(request: Request, body: Record<string, unknown>, database: D1Database) {
+  if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
+  const eventId = safeText(body.eventId, 80);
+  const syncId = safeText(body.syncId, 80);
+  const rawChanges = Array.isArray(body.changes) ? body.changes : [];
+  if (!eventId || !syncId || !rawChanges.length || rawChanges.length > 200) {
+    return noStoreJson({ error: "invalid_payload" }, { status: 400 });
+  }
+  const event = await database.prepare(`SELECT status, sync_mode FROM checkin_events
+    WHERE event_id = ? LIMIT 1`).bind(eventId).first<{ status: string; sync_mode: string }>();
+  if (!event) return noStoreJson({ error: "event_not_found" }, { status: 404 });
+  if (event.status !== "active" || event.sync_mode !== "single") {
+    return noStoreJson({ error: "event_not_ready" }, { status: 409 });
+  }
+
+  const statements: D1PreparedStatement[] = [];
+  const occurredAt = new Date().toISOString();
+  for (let index = 0; index < rawChanges.length; index += 1) {
+    const raw = rawChanges[index];
+    const change = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    const attendeeId = safeText(change.id, 240);
+    const checkedInAt = change.checkedInAt === null ? null : safeIso(change.checkedInAt);
+    if (!attendeeId || change.checkedInAt !== null && !checkedInAt) {
+      return noStoreJson({ error: "invalid_payload" }, { status: 400 });
+    }
+    const requestId = `${syncId}:${index}`;
+    const outcome = checkedInAt ? "success" : "undo";
+    statements.push(
+      database.prepare(`INSERT OR IGNORE INTO checkin_activity
+          (event_id, attendee_id, lane_id, outcome, checked_in_at, occurred_at, request_id)
+        SELECT ?, attendee_id, NULL, ?, ?, ?, ? FROM checkin_attendees
+        WHERE event_id = ? AND attendee_id = ? AND checked_in_at IS NOT ?`)
+        .bind(eventId, outcome, checkedInAt, occurredAt, requestId, eventId, attendeeId, checkedInAt),
+      database.prepare(`UPDATE checkin_attendees
+        SET checked_in_at = ?, checked_in_lane_id = NULL
+        WHERE event_id = ? AND attendee_id = ? AND checked_in_at IS NOT ?`)
+        .bind(checkedInAt, eventId, attendeeId, checkedInAt),
+    );
+  }
+  for (let index = 0; index < statements.length; index += 100) {
+    await database.batch(statements.slice(index, index + 100));
+  }
+  await database.prepare("UPDATE checkin_events SET updated_at = ? WHERE event_id = ?")
+    .bind(occurredAt, eventId).run();
+  const cursor = await database.prepare("SELECT COALESCE(MAX(id), 0) AS cursor FROM checkin_activity WHERE event_id = ?")
+    .bind(eventId).first<{ cursor: number }>();
+  return noStoreJson({ ok: true, cursor: cursor?.cursor ?? 0 });
+}
+
 async function handleCreateLane(request: Request, body: Record<string, unknown>, database: D1Database) {
   if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
   const eventId = safeText(body.eventId, 80);
@@ -522,6 +577,7 @@ export async function POST(request: Request) {
       case "finalize_import": return handleFinalizeImport(request, body, database);
       case "scan": return handleScan(body, database);
       case "set_attendee": return handleSetAttendee(request, body, database);
+      case "sync_single": return handleSingleSync(request, body, database);
       case "create_lane": return handleCreateLane(request, body, database);
       case "revoke_lane":
       case "rename_lane":
@@ -644,7 +700,7 @@ async function handleProjectionGet(url: URL, database: D1Database) {
   const afterValue = url.searchParams.get("after");
   const after = Math.max(0, Number.parseInt(afterValue ?? "0", 10) || 0);
   const event = await database.prepare(`SELECT event_id, file_name, headers_json,
-      selected_fields_json, background_color, total, status, cue_id, cue_type, cue_at
+      selected_fields_json, background_color, sync_mode, total, status, cue_id, cue_type, cue_at
     FROM checkin_events WHERE active = 1 AND status = 'active' ORDER BY updated_at DESC LIMIT 1`)
     .first<EventRow>();
   if (!event) return noStoreJson({ event: null });

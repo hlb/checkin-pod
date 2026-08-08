@@ -1,11 +1,13 @@
 import type {
   Attendee,
+  CheckInMode,
   DisplaySettings,
   LastScan,
   ProjectionCue,
   ProjectionCueType,
   SavedEvent,
 } from "./checkin-core.ts";
+import { toAttendees } from "./checkin-core.ts";
 import {
   MAX_SHARED_ATTENDEES,
   MAX_SHARED_LANES,
@@ -84,7 +86,10 @@ export type SharedAdminEventMetadata = {
   backgroundColor: string;
   total: number;
   cursor: number;
+  syncMode: CheckInMode;
 };
+
+export type SingleCheckInChange = Pick<Attendee, "id" | "checkedInAt">;
 
 export class SharedApiError extends Error {
   readonly status: number;
@@ -140,6 +145,7 @@ async function apiJson<T extends JsonResponse>(input: RequestInfo | URL, init?: 
 export async function importSharedEvent(
   event: SavedEvent,
   onProgress?: (uploaded: number, total: number) => void,
+  syncMode: CheckInMode = "multi",
 ): Promise<SharedEventConnection> {
   assertSharedCapacity(event.attendees.length);
   const beginning = await apiJson<{
@@ -157,6 +163,7 @@ export async function importSharedEvent(
       selectedFields: event.displaySettings?.selectedFields ?? [],
       backgroundColor: event.displaySettings?.backgroundColor ?? "#0E0F12",
       expectedTotal: event.attendees.length,
+      syncMode,
     }),
   });
 
@@ -184,6 +191,62 @@ export async function importSharedEvent(
     body: JSON.stringify({ action: "finalize_import", eventId: beginning.eventId }),
   });
   return { ...beginning, cursor: finalized.cursor };
+}
+
+export function checkInStateSignature(attendees: Pick<Attendee, "id" | "checkedInAt">[]) {
+  let hash = 2_166_136_261;
+  let checked = 0;
+  for (const attendee of attendees) {
+    if (attendee.checkedInAt) checked += 1;
+    const value = `${attendee.id}\u0000${attendee.checkedInAt ?? ""}\u0000`;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16_777_619) >>> 0;
+    }
+  }
+  return `${attendees.length}:${checked}:${hash.toString(16).padStart(8, "0")}`;
+}
+
+export function diffSingleCheckInState(
+  localAttendees: Pick<Attendee, "id" | "checkedInAt">[],
+  serverAttendees: Pick<Attendee, "id" | "checkedInAt">[],
+) {
+  const serverStates = new Map(serverAttendees.map((attendee) => [attendee.id, attendee.checkedInAt]));
+  return localAttendees.flatMap<SingleCheckInChange>((attendee) =>
+    serverStates.has(attendee.id) && serverStates.get(attendee.id) === attendee.checkedInAt
+      ? []
+      : [{ id: attendee.id, checkedInAt: attendee.checkedInAt }],
+  );
+}
+
+export function restoreSingleAttendeeScanKeys(attendees: Attendee[], importedAt: string) {
+  const parsed = toAttendees(attendees.map((attendee) => attendee.original), importedAt);
+  return attendees.map((attendee, index) => ({
+    ...attendee,
+    qrValue: parsed[index]?.qrValue ?? "",
+    scanKeys: parsed[index]?.scanKeys ?? [],
+  }));
+}
+
+export async function syncSingleCheckInState(
+  eventId: string,
+  changes: SingleCheckInChange[],
+  onProgress?: (synced: number, total: number) => void,
+) {
+  let cursor = 0;
+  let synced = 0;
+  const syncId = crypto.randomUUID();
+  for (const chunk of chunkItems(changes)) {
+    const result = await apiJson<{ cursor: number }>("/api/shared-checkin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "sync_single", eventId, syncId: `${syncId}:${synced}`, changes: chunk }),
+    });
+    cursor = Math.max(cursor, result.cursor);
+    synced += chunk.length;
+    onProgress?.(synced, changes.length);
+  }
+  return { cursor };
 }
 
 export async function readSharedLane(session: SharedLaneSession) {
@@ -360,8 +423,10 @@ export async function rotateSharedLane(eventId: string, laneId: string) {
   return { ...lane, url: laneUrl(eventId, lane.laneId, lane.laneToken) };
 }
 
-export async function fetchActiveSharedEventSummary() {
-  return apiJson<{ event: SharedAdminEventMetadata | null }>("/api/shared-checkin?mode=admin_summary")
+export async function fetchActiveSharedEventSummary(eventId = "") {
+  const query = new URLSearchParams({ mode: "admin_summary" });
+  if (eventId) query.set("eventId", eventId);
+  return apiJson<{ event: SharedAdminEventMetadata | null }>(`/api/shared-checkin?${query}`)
     .then((body) => body.event);
 }
 
@@ -398,6 +463,31 @@ export async function fetchCompleteSharedRoster(eventId = "") {
 export async function restoreActiveSharedEvent(): Promise<SavedEvent | null> {
   const restored = await fetchCompleteSharedRoster();
   if (!restored.event) return null;
+  const restoredAt = new Date().toISOString();
+  if (restored.event.syncMode === "single") {
+    const attendees = restoreSingleAttendeeScanKeys(restored.attendees, restored.event.importedAt);
+    return {
+      version: 1,
+      fileName: restored.event.fileName,
+      importedAt: restored.event.importedAt,
+      headers: restored.event.headers,
+      attendees,
+      sourceRowCount: restored.event.total,
+      excludedRowCount: 0,
+      displaySettings: {
+        selectedFields: restored.event.selectedFields,
+        backgroundColor: restored.event.backgroundColor,
+      },
+      revision: restored.event.cursor,
+      checkInMode: "single",
+      singleSync: {
+        eventId: restored.event.eventId,
+        cursor: restored.event.cursor,
+        lastSyncedAt: restoredAt,
+        lastSyncedSignature: checkInStateSignature(attendees),
+      },
+    };
+  }
   const lane = await createSharedLane(restored.event.eventId, "復原中控台");
   return {
     version: 1,
@@ -412,6 +502,7 @@ export async function restoreActiveSharedEvent(): Promise<SavedEvent | null> {
       backgroundColor: restored.event.backgroundColor,
     },
     revision: restored.event.cursor,
+    checkInMode: "multi",
     sharedEvent: {
       eventId: restored.event.eventId,
       laneId: lane.laneId,

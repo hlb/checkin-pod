@@ -156,6 +156,10 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(page, /checkin-pod-sample-10000\.zip/);
   assert.match(page, /兩份範例共用同一組測試 QR Code/);
   assert.match(page, /登出中控台/);
+  assert.match(page, /單機報到/);
+  assert.match(page, /每 5 分鐘同步/);
+  assert.match(page, /立即同步/);
+  assert.match(page, /importMode.*single/s);
   assert.match(page, /Checkin Pod/);
   assert.match(page, /commitScan/);
   assert.match(scanPage, /commitScan/);
@@ -196,6 +200,8 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(sharedRoute, /hasValidAdminSession/);
   assert.match(sharedRoute, /sha256Hex\(laneToken\)/);
   assert.match(sharedRoute, /SHARED_CHANGE_PAGE_SIZE \+ 1/);
+  assert.match(sharedRoute, /sync_single/);
+  assert.match(sharedRoute, /sync_mode/);
   assert.match(sharedSql, /checked_in_at IS NULL/);
   assert.match(sharedSql, /CHECK\(total >= 0 AND total <= 10000\)/);
   assert.match(policy, /input\.total > 200/);

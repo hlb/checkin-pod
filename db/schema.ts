@@ -12,6 +12,7 @@ export const checkinEvents = sqliteTable("checkin_events", {
   headersJson: text("headers_json").notNull(),
   selectedFieldsJson: text("selected_fields_json").notNull(),
   backgroundColor: text("background_color").notNull().default("#0E0F12"),
+  syncMode: text("sync_mode").notNull().default("multi"),
   total: integer("total").notNull().default(0),
   status: text("status").notNull().default("importing"),
   active: integer("active", { mode: "boolean" }).notNull().default(false),

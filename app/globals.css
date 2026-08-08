@@ -211,7 +211,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .trust-row i { width: 20px; height: 1px; background: #c4c7bd; }
 
 .drop-card {
-  min-height: 530px;
+  min-height: 620px;
   padding: 56px 48px 42px;
   display: flex;
   flex-direction: column;
@@ -254,6 +254,15 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .drop-kicker { margin: 0 0 7px; color: var(--orange-dark); font-size: 11px; font-weight: 900; letter-spacing: .15em; text-transform: uppercase; }
 .drop-card h2 { margin: 0; font-family: Georgia, "Noto Serif TC", serif; font-size: 28px; letter-spacing: -.02em; }
 .drop-card > p:not(.drop-kicker) { margin: 10px 0 23px; color: var(--muted); font-size: 14px; }
+.checkin-mode-picker { width: min(390px, 100%); margin: -4px 0 18px; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; border: 0; position: relative; z-index: 1; }
+.checkin-mode-picker legend { width: 100%; margin-bottom: 7px; color: #677168; font-size: 10px; font-weight: 850; text-align: left; }
+.checkin-mode-picker label { min-width: 0; padding: 11px 12px; display: flex; align-items: center; gap: 9px; color: #687169; background: #f0f1ec; border: 1px solid #d9ddd4; border-radius: 10px; text-align: left; cursor: pointer; transition: border-color .18s ease, background .18s ease, box-shadow .18s ease; }
+.checkin-mode-picker label.is-selected { color: var(--forest); background: #e6f1e8; border-color: #9fc5aa; box-shadow: 0 0 0 3px rgba(56,127,80,.08); }
+.checkin-mode-picker input { margin: 0; accent-color: var(--forest); }
+.checkin-mode-picker span, .checkin-mode-picker strong, .checkin-mode-picker small { min-width: 0; display: block; }
+.checkin-mode-picker strong { font-size: 11px; }
+.checkin-mode-picker small { margin-top: 3px; overflow: hidden; color: #7d867e; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.checkin-mode-picker:disabled { opacity: .6; }
 .drop-card .primary-button { min-width: 190px; }
 .sample-downloads { margin-top: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 7px 15px; }
 .sample-link { border: 0; background: transparent; color: #597062; font-size: 12px; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; }
@@ -380,6 +389,20 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .event-control-strip strong, .event-control-strip small { display: block; }
 .event-control-strip strong { font-size: 12px; }
 .event-control-strip small { margin-top: 4px; color: #aebfb4; font-size: 9px; font-weight: 650; }
+.single-sync-control { margin-top: 14px; padding: 17px 18px; position: relative; z-index: 2; display: grid; grid-template-columns: minmax(240px, 1fr) minmax(220px, auto) auto; align-items: center; gap: 18px; color: #fff; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); border-radius: 16px; }
+.single-sync-copy > span { color: #8fe4bd; font-size: 8px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
+.single-sync-copy strong { margin-top: 5px; display: block; font-size: 14px; }
+.single-sync-copy p { margin: 6px 0 0; color: #aebfb4; font-size: 10px; line-height: 1.55; }
+.single-sync-status { min-width: 220px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; background: rgba(0,0,0,.16); border-radius: 10px; }
+.single-sync-status > i { width: 8px; height: 8px; flex: 0 0 8px; background: #6ee7a1; border-radius: 50%; box-shadow: 0 0 0 4px rgba(110,231,161,.12); }
+.single-sync-control.is-pending .single-sync-status > i, .single-sync-control.is-checking .single-sync-status > i { background: #f3bd63; box-shadow: 0 0 0 4px rgba(243,189,99,.12); }
+.single-sync-control.is-error .single-sync-status > i { background: #ff8a70; box-shadow: 0 0 0 4px rgba(255,138,112,.12); }
+.single-sync-control.is-checking .single-sync-status > i { animation: queue-pulse 1s ease-in-out infinite; }
+.single-sync-status strong, .single-sync-status span { display: block; }
+.single-sync-status strong { font-size: 10px; }
+.single-sync-status span { margin-top: 3px; color: #aebfb4; font-size: 8px; }
+.single-sync-control > button { min-height: 42px; padding: 0 15px; color: #10251b; background: #8fe4bd; border: 0; border-radius: 10px; font-size: 10px; font-weight: 900; white-space: nowrap; }
+.single-sync-control > button:disabled { opacity: .55; }
 .lane-control { margin-top: 14px; padding: 18px; position: relative; z-index: 2; display: grid; grid-template-columns: minmax(220px, .8fr) minmax(320px, 1.2fr); gap: 18px; color: #fff; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); border-radius: 16px; }
 .lane-control-copy > span { color: #8fe4bd; font-size: 8px; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
 .lane-control-copy strong { margin-top: 5px; display: block; font-size: 14px; }
@@ -740,6 +763,8 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .event-control-strip { grid-template-columns: 1fr 1fr; }
   .event-control-strip > a { grid-column: 1 / -1; }
+  .single-sync-control { grid-template-columns: 1fr auto; }
+  .single-sync-copy { grid-column: 1 / -1; }
   .lane-control { grid-template-columns: 1fr; }
   .lane-link-result { grid-column: auto; grid-template-columns: 1fr auto; }
   .lane-link-result code { grid-column: 1 / -1; }
@@ -783,7 +808,8 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .welcome-lead { font-size: 15px; }
   .trust-row { gap: 9px; font-size: 11px; }
   .trust-row i { width: 9px; }
-  .drop-card { min-height: 430px; padding: 46px 24px 32px; }
+  .drop-card { min-height: 560px; padding: 46px 24px 32px; }
+  .checkin-mode-picker { grid-template-columns: 1fr; }
   .privacy-note { width: 100%; }
   .event-dashboard { padding: 42px 16px 54px; }
   .dashboard-heading { align-items: flex-start; flex-direction: column; }
@@ -793,6 +819,9 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .control-status { align-self: flex-start; }
   .event-control-strip { grid-template-columns: 1fr; }
   .event-control-strip > a { grid-column: auto; }
+  .single-sync-control { grid-template-columns: 1fr; }
+  .single-sync-copy { grid-column: auto; }
+  .single-sync-status { min-width: 0; }
   .lane-create-form { align-items: stretch; flex-direction: column; }
   .lane-link-result { grid-template-columns: 1fr; }
   .lane-link-result code { grid-column: auto; }

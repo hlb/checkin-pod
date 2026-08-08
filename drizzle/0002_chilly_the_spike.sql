@@ -1,0 +1,1 @@
+ALTER TABLE `checkin_events` ADD `sync_mode` text DEFAULT 'multi' NOT NULL;

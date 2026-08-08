@@ -11,7 +11,10 @@ import {
   applySharedChanges,
   applySharedScanResult,
   assertSharedCapacity,
+  checkInStateSignature,
   chunkItems,
+  diffSingleCheckInState,
+  restoreSingleAttendeeScanKeys,
   scanSharedEventWithRetry,
 } from "../app/shared-checkin.ts";
 import {
@@ -54,6 +57,50 @@ test("bounds shared events at 10,000 attendees and chunks imports without loss",
 
 test("bounds each event at 100 active workstations", () => {
   assert.equal(MAX_SHARED_LANES, 100);
+});
+
+test("detects single-device check-in differences before server sync", () => {
+  const local = [
+    { id: "guest-1", checkedInAt: "2026-08-08T01:00:00.000Z" },
+    { id: "guest-2", checkedInAt: null },
+    { id: "guest-3", checkedInAt: "2026-08-08T01:03:00.000Z" },
+  ];
+  const server = [
+    { id: "guest-1", checkedInAt: "2026-08-08T01:00:00.000Z" },
+    { id: "guest-2", checkedInAt: "2026-08-08T01:02:00.000Z" },
+    { id: "guest-3", checkedInAt: null },
+  ];
+
+  assert.notEqual(checkInStateSignature(local), checkInStateSignature(server));
+  assert.deepEqual(diffSingleCheckInState(local, server), [
+    { id: "guest-2", checkedInAt: null },
+    { id: "guest-3", checkedInAt: "2026-08-08T01:03:00.000Z" },
+  ]);
+  assert.deepEqual(diffSingleCheckInState(local, local), []);
+});
+
+test("restores local QR scan keys for a single-device server backup", () => {
+  const restored = restoreSingleAttendeeScanKeys([{
+    id: "guest-1-0",
+    name: "王小明",
+    email: "guest@example.com",
+    phone: "",
+    ticket: "一般票",
+    approvalStatus: "approved",
+    qrValue: "",
+    scanKeys: [],
+    checkedInAt: "2026-08-08T01:00:00.000Z",
+    original: {
+      guest_id: "guest-1",
+      name: "王小明",
+      email: "guest@example.com",
+      qr_code_url: "https://example.com/check-in?pk=QR-001",
+    },
+  }], "2026-08-08T00:00:00.000Z");
+
+  assert.equal(restored[0].qrValue, "https://example.com/check-in?pk=QR-001");
+  assert.ok(restored[0].scanKeys.includes("qr-001"));
+  assert.equal(restored[0].checkedInAt, "2026-08-08T01:00:00.000Z");
 });
 
 test("persists only valid queued scans and enforces the offline queue bound", () => {
@@ -144,6 +191,7 @@ test("enforces the 10,000 attendee capacity in SQLite itself", () => {
   assert.throws(() => insertEvent(database, 10_001), /CHECK constraint failed/);
   insertEvent(database, 10_000);
   assert.equal(database.prepare("SELECT total FROM checkin_events WHERE event_id = ?").get("event-1").total, 10_000);
+  assert.equal(database.prepare("SELECT sync_mode FROM checkin_events WHERE event_id = ?").get("event-1").sync_mode, "multi");
   database.close();
 });
 
@@ -265,9 +313,12 @@ test("a direct scan response cannot skip unseen activity from another client", (
 });
 
 test("generated migration is executable and retains query optimization", async () => {
-  const migration = await readFile(new URL("../drizzle/0001_volatile_tigra.sql", import.meta.url), "utf8");
+  const [initialMigration, modeMigration] = await Promise.all([
+    readFile(new URL("../drizzle/0001_volatile_tigra.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0002_chilly_the_spike.sql", import.meta.url), "utf8"),
+  ]);
   const database = new DatabaseSync(":memory:");
-  for (const statement of migration.split("--> statement-breakpoint").map((item) => item.trim()).filter(Boolean)) {
+  for (const statement of `${initialMigration}\n--> statement-breakpoint\n${modeMigration}`.split("--> statement-breakpoint").map((item) => item.trim()).filter(Boolean)) {
     database.exec(statement);
   }
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name);
@@ -276,6 +327,8 @@ test("generated migration is executable and retains query optimization", async (
   assert.ok(tables.includes("checkin_scan_keys"));
   assert.ok(tables.includes("checkin_lanes"));
   assert.ok(tables.includes("checkin_activity"));
-  assert.match(migration, /PRAGMA optimize/);
+  assert.match(initialMigration, /PRAGMA optimize/);
+  assert.match(modeMigration, /ADD `sync_mode`/);
+  assert.equal(database.prepare("SELECT sync_mode FROM checkin_events LIMIT 1").get(), undefined);
   database.close();
 });

@@ -22,7 +22,6 @@ import {
   compactDate,
   csvEscape,
   defaultDisplayFields,
-  ensureSavedEventWriterToken,
   filterEligibleAttendees,
   formatTime,
   mutateSavedEvent,
@@ -37,15 +36,17 @@ import {
   writeBackgroundImageDataUrl,
   writeSavedEvent,
 } from "./checkin-core";
-import type { ProjectionCueType } from "./checkin-core";
+import type { CheckInMode, ProjectionCueType } from "./checkin-core";
 import { appendPendingScan, parsePendingScans, scanQueueKey } from "./scan-queue";
 import type { PendingScan } from "./scan-queue";
 import {
   MAX_SHARED_ATTENDEES,
   applySharedChanges,
   applySharedScanResult,
+  checkInStateSignature,
   createSharedLane,
   deleteSharedEvent,
+  diffSingleCheckInState,
   fetchSharedChanges,
   fetchActiveSharedEventSummary,
   fetchCompleteSharedRoster,
@@ -58,6 +59,7 @@ import {
   scanSharedEventWithRetry,
   sendSharedProjectionCue,
   setSharedAttendeeCheckIn,
+  syncSingleCheckInState,
   updateSharedSettings,
 } from "./shared-checkin";
 import type { SharedAdminEventMetadata, SharedLane, SharedLaneRecord } from "./shared-checkin";
@@ -77,6 +79,13 @@ const MAX_BACKGROUND_WIDTH = 2560;
 const MAX_BACKGROUND_HEIGHT = 1440;
 const BACKGROUND_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const DEFAULT_GUEST_BACKGROUND = "#0E0F12";
+const SINGLE_SYNC_INTERVAL_MS = 5 * 60 * 1_000;
+const SINGLE_SYNC_STATUS_INTERVAL_MS = 30_000;
+
+type SingleSyncView = {
+  kind: "idle" | "checking" | "pending" | "synced" | "error";
+  message: string;
+};
 
 type ArrivalBucket = {
   start: number;
@@ -257,6 +266,10 @@ export default function Home() {
   const [recovering, setRecovering] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [adminScanQueueSize, setAdminScanQueueSize] = useState(0);
+  const [importMode, setImportMode] = useState<CheckInMode>("single");
+  const [singleSyncView, setSingleSyncView] = useState<SingleSyncView>({ kind: "idle", message: "" });
+  const [singleSyncBusy, setSingleSyncBusy] = useState(false);
+  const [singleSyncProgress, setSingleSyncProgress] = useState(0);
   const scanInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
@@ -266,6 +279,7 @@ export default function Home() {
   const adminPendingScansRef = useRef<PendingScan[]>([]);
   const adminQueueBusyRef = useRef(false);
   const drainAdminQueueRef = useRef<() => Promise<void>>(async () => undefined);
+  const singleSyncBusyRef = useRef(false);
   const sharedEventId = event?.sharedEvent?.eventId;
   const sharedLaneId = event?.sharedEvent?.laneId;
   const sharedInitialCursor = event?.sharedEvent?.cursor ?? 0;
@@ -282,22 +296,103 @@ export default function Home() {
     }
   }, [sharedEventId]);
 
+  const syncSingleDevice = useCallback(async (source: "initial" | "automatic" | "manual" = "manual") => {
+    if (singleSyncBusyRef.current) return;
+    singleSyncBusyRef.current = true;
+    setSingleSyncBusy(true);
+    setSingleSyncProgress(0);
+    setSingleSyncView({ kind: "checking", message: "正在同步報到狀態…" });
+    try {
+      const current = await readSavedEvent();
+      if (!current || current.checkInMode !== "single") return;
+
+      let eventId = current.singleSync?.eventId ?? "";
+      let cursor = current.singleSync?.cursor ?? 0;
+      let changes = [] as ReturnType<typeof diffSingleCheckInState>;
+      if (eventId) {
+        const localSignature = checkInStateSignature(current.attendees);
+        const summary = await fetchActiveSharedEventSummary(eventId);
+        const needsRosterComparison = summary?.syncMode === "single"
+          && summary.total === current.attendees.length
+          && (summary.cursor !== current.singleSync?.cursor
+            || localSignature !== current.singleSync?.lastSyncedSignature);
+        if (summary?.syncMode === "single" && summary.total === current.attendees.length) {
+          cursor = Math.max(cursor, summary.cursor);
+          if (needsRosterComparison) {
+            const server = await fetchCompleteSharedRoster(eventId);
+            const serverIds = new Set(server.attendees.map((attendee) => attendee.id));
+            const hasSameRoster = server.attendees.length === current.attendees.length
+              && current.attendees.every((attendee) => serverIds.has(attendee.id));
+            if (server.event?.syncMode === "single" && hasSameRoster) {
+              changes = diffSingleCheckInState(current.attendees, server.attendees);
+              cursor = Math.max(cursor, server.event.cursor);
+            } else {
+              eventId = "";
+            }
+          }
+        } else {
+          eventId = "";
+        }
+      }
+
+      if (!eventId) {
+        const connection = await importSharedEvent(
+          current,
+          (uploaded, total) => setSingleSyncProgress(Math.round((uploaded / total) * 100)),
+          "single",
+        );
+        eventId = connection.eventId;
+        cursor = connection.cursor;
+      } else if (changes.length) {
+        const synced = await syncSingleCheckInState(
+          eventId,
+          changes,
+          (completed, total) => setSingleSyncProgress(Math.round((completed / total) * 100)),
+        );
+        cursor = Math.max(cursor, synced.cursor);
+      }
+      await updateSharedSettings(eventId, current.displaySettings ?? { selectedFields: [] });
+
+      const syncedAt = new Date().toISOString();
+      const syncedSignature = checkInStateSignature(current.attendees);
+      const next = await mutateSavedEvent((latest) => latest.checkInMode === "single"
+        ? {
+            ...latest,
+            singleSync: {
+              eventId,
+              cursor,
+              lastSyncedAt: syncedAt,
+              lastSyncedSignature: syncedSignature,
+            },
+          }
+        : latest);
+      setEvent(next);
+      const hasNewLocalState = checkInStateSignature(next.attendees) !== syncedSignature;
+      setSingleSyncView(hasNewLocalState
+        ? { kind: "pending", message: "同步期間新增了報到，可立即再同步。" }
+        : {
+            kind: "synced",
+            message: `${changes.length.toLocaleString()} 筆差異已同步 · ${formatTime(syncedAt)}`,
+          });
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "伺服器同步暫時失敗。";
+      setSingleSyncView({ kind: "error", message: "本機資料完整，伺服器同步等待重試。" });
+      if (source !== "automatic") setError(message);
+    } finally {
+      singleSyncBusyRef.current = false;
+      setSingleSyncBusy(false);
+      setSingleSyncProgress(0);
+    }
+  }, []);
+
   useEffect(() => {
     const load = async () => {
       try {
         const saved = await readSavedEvent();
-        let prepared = saved;
-        if (saved && !saved.sharedEvent) {
-          try {
-            prepared = await ensureSavedEventWriterToken();
-          } catch {
-            setError("名單已從瀏覽器載入，但投影牆暫時無法同步。");
-          }
-        }
-        setEvent(prepared);
-        setScanResult(resultFromSavedEvent(prepared));
+        setEvent(saved);
+        setScanResult(resultFromSavedEvent(saved));
         setBackgroundImageDataUrl(await readBackgroundImageDataUrl());
-        if (!prepared) setRecoverableEvent(await fetchActiveSharedEventSummary());
+        if (!saved) setRecoverableEvent(await fetchActiveSharedEventSummary());
       } catch {
         setError("無法讀取瀏覽器中的報到紀錄，請確認不是使用私密瀏覽模式。");
       } finally {
@@ -306,6 +401,62 @@ export default function Home() {
     };
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!event || event.checkInMode !== "single" || singleSyncBusyRef.current) return;
+    const signature = checkInStateSignature(event.attendees);
+    if (!event.singleSync) {
+      setSingleSyncView({ kind: "pending", message: "伺服器等待第一次同步。" });
+    } else if (signature !== event.singleSync.lastSyncedSignature) {
+      setSingleSyncView({ kind: "pending", message: "本機有新的報到狀態。" });
+    } else {
+      setSingleSyncView({
+        kind: "synced",
+        message: `上次同步 ${formatTime(event.singleSync.lastSyncedAt, true)}`,
+      });
+    }
+  }, [event]);
+
+  useEffect(() => {
+    if (!event || event.checkInMode !== "single") return;
+    let interval: number | undefined;
+    const elapsed = event.singleSync?.lastSyncedAt
+      ? Date.now() - new Date(event.singleSync.lastSyncedAt).getTime()
+      : SINGLE_SYNC_INTERVAL_MS;
+    const initialDelay = Math.max(0, SINGLE_SYNC_INTERVAL_MS - Math.max(0, elapsed));
+    const timeout = window.setTimeout(() => {
+      void syncSingleDevice("automatic");
+      interval = window.setInterval(() => void syncSingleDevice("automatic"), SINGLE_SYNC_INTERVAL_MS);
+    }, initialDelay);
+    return () => {
+      window.clearTimeout(timeout);
+      if (interval) window.clearInterval(interval);
+    };
+  }, [event?.checkInMode, event?.singleSync?.eventId, syncSingleDevice]);
+
+  useEffect(() => {
+    const connection = event?.checkInMode === "single" ? event.singleSync : undefined;
+    if (!connection) return;
+    let disposed = false;
+    const check = async () => {
+      if (singleSyncBusyRef.current) return;
+      try {
+        const summary = await fetchActiveSharedEventSummary(connection.eventId);
+        if (!disposed && (!summary || summary.syncMode !== "single" || summary.cursor !== connection.cursor)) {
+          setSingleSyncView({ kind: "pending", message: "本機與伺服器狀態不同。" });
+        }
+      } catch {
+        if (!disposed) setSingleSyncView({ kind: "error", message: "伺服器狀態等待確認。" });
+      }
+    };
+    const initial = window.setTimeout(() => void check(), 0);
+    const timer = window.setInterval(() => void check(), SINGLE_SYNC_STATUS_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [event?.checkInMode, event?.singleSync?.cursor, event?.singleSync?.eventId]);
 
   useEffect(() => {
     if (!sharedEventId) return;
@@ -602,11 +753,14 @@ export default function Home() {
           sourceRowCount: rows.length,
           excludedRowCount: rows.length - attendees.length,
           displaySettings: { selectedFields: defaultDisplayFields(headers) },
+          checkInMode: importMode,
         };
-        const sharedEvent = await importSharedEvent(nextEvent, (uploaded, total) => {
-          setImportProgress(Math.round((uploaded / total) * 100));
-        });
         await writeBackgroundImageDataUrl(null);
+        const sharedEvent = importMode === "multi"
+          ? await importSharedEvent(nextEvent, (uploaded, total) => {
+              setImportProgress(Math.round((uploaded / total) * 100));
+            }, "multi")
+          : undefined;
         const committed = await replaceSavedEvent({ ...nextEvent, sharedEvent });
         setEvent(committed.event);
         setBackgroundImageDataUrl(null);
@@ -617,6 +771,7 @@ export default function Home() {
         setFilter("all");
         setSearch("");
         setGuestPage(1);
+        if (importMode === "single") await syncSingleDevice("initial");
         window.setTimeout(() => scanInputRef.current?.focus(), 80);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "無法讀取這份 CSV，請確認檔案格式。 ");
@@ -626,7 +781,7 @@ export default function Home() {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
-    [event],
+    [event, importMode, syncSingleDevice],
   );
 
   const handleFileChange = (changeEvent: ChangeEvent<HTMLInputElement>) => {
@@ -744,7 +899,8 @@ export default function Home() {
     if (!event || !window.confirm("確定要清除這台瀏覽器中的名單與所有報到紀錄嗎？此動作無法復原。")) {
       return;
     }
-    if (event.sharedEvent) await deleteSharedEvent(event.sharedEvent.eventId).catch(() => undefined);
+    const serverEventId = event.sharedEvent?.eventId ?? event.singleSync?.eventId;
+    if (serverEventId) await deleteSharedEvent(serverEventId).catch(() => undefined);
     await clearSavedEvent();
     await clearLiveEvent().catch(() => undefined);
     broadcastEventChange();
@@ -787,7 +943,8 @@ export default function Home() {
       displaySettings: { ...current.displaySettings, selectedFields },
     })).then(async (next) => {
       setEvent(next);
-      if (next.sharedEvent) await updateSharedSettings(next.sharedEvent.eventId, next.displaySettings!);
+      const serverEventId = next.sharedEvent?.eventId ?? next.singleSync?.eventId;
+      if (serverEventId) await updateSharedSettings(serverEventId, next.displaySettings!);
     }).catch(() => setError("無法保存來賓畫面欄位設定。"));
   };
 
@@ -833,7 +990,8 @@ export default function Home() {
       },
     })).then(async (next) => {
       setEvent(next);
-      if (next.sharedEvent) await updateSharedSettings(next.sharedEvent.eventId, next.displaySettings!);
+      const serverEventId = next.sharedEvent?.eventId ?? next.singleSync?.eventId;
+      if (serverEventId) await updateSharedSettings(serverEventId, next.displaySettings!);
     }).catch(() => setError("無法保存背景底色。"));
   };
 
@@ -857,7 +1015,8 @@ export default function Home() {
   const triggerProjectionCue = async (type: ProjectionCueType) => {
     setControlBusy(type);
     try {
-      if (event?.sharedEvent) await sendSharedProjectionCue(event.sharedEvent.eventId, type);
+      const serverEventId = event?.sharedEvent?.eventId ?? event?.singleSync?.eventId;
+      if (serverEventId) await sendSharedProjectionCue(serverEventId, type);
       else await publishProjectionCue(type);
       setControlNote(type === "boarding" ? "登車廣播指令已送出" : "全場彩蛋指令已送出");
     } catch (caught) {
@@ -1017,7 +1176,7 @@ export default function Home() {
         <div className="top-actions">
           {event ? (
             <>
-              <span className="saved-pill"><i /> {event.sharedEvent ? "多工作站同步中" : "已儲存在此裝置"}</span>
+              <span className="saved-pill"><i /> {event.checkInMode === "multi" ? "多機即時同步" : "單機 · 已儲存在此裝置"}</span>
               <a className="display-button" href="/scan" target="_blank" rel="noreferrer">
                 開啟來賓畫面 <span aria-hidden="true">↗</span>
               </a>
@@ -1072,7 +1231,7 @@ export default function Home() {
             <p className="eyebrow"><span /> 現場報到，從容開始</p>
             <h1>一掃，就知道<br /><em>誰抵達了。</em></h1>
             <p className="welcome-lead">
-              匯入 Luma 或 KKTIX 活動名單，接上掃描器就能開始。最多 10,000 人，支援多台設備同步報到。
+              匯入 Luma 或 KKTIX 活動名單，選擇單機或多機報到。系統預設單機，最多支援 10,000 人。
             </p>
             <div className="trust-row">
               <span><b>01</b> 匯入 CSV</span>
@@ -1096,13 +1255,36 @@ export default function Home() {
             <p className="drop-kicker">準備活動名單</p>
             <h2>{importing ? "正在讀取名單…" : "把 Luma / KKTIX CSV 放到這裡"}</h2>
             <p>或從電腦選擇一份檔案</p>
+            <fieldset className="checkin-mode-picker" disabled={importing}>
+              <legend>報到模式</legend>
+              <label className={importMode === "single" ? "is-selected" : ""}>
+                <input
+                  type="radio"
+                  name="checkin-mode"
+                  value="single"
+                  checked={importMode === "single"}
+                  onChange={() => setImportMode("single")}
+                />
+                <span><strong>單機</strong><small>本機報到 · 每 5 分鐘備份</small></span>
+              </label>
+              <label className={importMode === "multi" ? "is-selected" : ""}>
+                <input
+                  type="radio"
+                  name="checkin-mode"
+                  value="multi"
+                  checked={importMode === "multi"}
+                  onChange={() => setImportMode("multi")}
+                />
+                <span><strong>多機</strong><small>多入口即時防重複</small></span>
+              </label>
+            </fieldset>
             <button
               className="primary-button"
               type="button"
               disabled={importing}
               onClick={() => fileInputRef.current?.click()}
             >
-              {importing ? `同步名單中${importProgress ? ` · ${importProgress}%` : "…"}` : "選擇 CSV 檔案"}
+              {importing ? `準備名單中${importProgress ? ` · ${importProgress}%` : "…"}` : "選擇 CSV 檔案"}
             </button>
             <div className="sample-downloads">
               <button className="sample-link" type="button" onClick={() => downloadSample(150)}>
@@ -1118,7 +1300,7 @@ export default function Home() {
                 <div>
                   <span>找到進行中的活動</span>
                   <strong>{recoverableEvent.fileName.replace(/\.csv$/i, "")}</strong>
-                  <small>{recoverableEvent.total.toLocaleString()} 位來賓 · 可從共用資料庫完整復原</small>
+                  <small>{recoverableEvent.total.toLocaleString()} 位來賓 · {recoverableEvent.syncMode === "single" ? "單機備份" : "多機活動"}可完整復原</small>
                 </div>
                 <button type="button" disabled={recovering} onClick={() => void restoreEvent()}>
                   {recovering ? "復原中…" : "復原活動"}
@@ -1127,7 +1309,11 @@ export default function Home() {
             ) : null}
             <div className="privacy-note">
               <span aria-hidden="true">⌂</span>
-              <p><strong>名單會安全同步至活動工作站</strong><br />每台設備都能即時防止同一張票重複入場</p>
+              {importMode === "single" ? (
+                <p><strong>完整名單保存在這台裝置</strong><br />報到狀態每 5 分鐘備份至伺服器</p>
+              ) : (
+                <p><strong>名單同步至每個活動入口</strong><br />共用資料庫即時防止重複入場</p>
+              )}
             </div>
           </div>
         </section>
@@ -1179,6 +1365,26 @@ export default function Home() {
                 <div><strong>開啟投影牆</strong><small>投影電腦以相同網站網址開啟</small></div>
               </a>
             </div>
+
+            {event.checkInMode === "single" ? (
+              <section className={`single-sync-control is-${singleSyncView.kind}`} aria-label="單機同步狀態">
+                <div className="single-sync-copy">
+                  <span>Single-device backup</span>
+                  <strong>單機報到</strong>
+                  <p>完整名單與報到操作保存在這台裝置。報到狀態每 5 分鐘同步至伺服器。</p>
+                </div>
+                <div className="single-sync-status" aria-live="polite">
+                  <i aria-hidden="true" />
+                  <div>
+                    <strong>{singleSyncBusy ? "正在同步" : singleSyncView.kind === "synced" ? "同步完成" : "等待同步"}</strong>
+                    <span>{singleSyncProgress ? `${singleSyncProgress}% · ` : ""}{singleSyncView.message}</span>
+                  </div>
+                </div>
+                <button type="button" disabled={singleSyncBusy} onClick={() => void syncSingleDevice("manual")}>
+                  {singleSyncBusy ? "同步中…" : "立即同步"}
+                </button>
+              </section>
+            ) : null}
 
             {event.sharedEvent ? (
               <section className="lane-control" aria-label="多工作站報到">
@@ -1528,7 +1734,7 @@ export default function Home() {
 
       <footer>
         <p><span className="brand-mark small">P</span> Checkin Pod · 活動報到輔助機</p>
-        <p>活動名單由共用資料庫同步；工作站只取得報到所需資料</p>
+        <p>{event?.checkInMode === "multi" ? "多機模式使用共用資料庫即時同步" : "單機模式使用本機名單與五分鐘伺服器備份"}</p>
       </footer>
     </main>
   );
