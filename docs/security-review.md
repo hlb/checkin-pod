@@ -62,7 +62,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 | SEC-009 | Medium | 開發工具鏈 advisories | Mitigated | 更新所有可修套件、移除 Drizzle 工具鏈、prod audit 0、停用無 patch 圖片 parsers |
 | SEC-010 | Medium | 共用管理密碼無身份與 audit | Fixed | `ADMIN_USERS_JSON` 具名帳號、actor audit、來源 IP hash；保留單帳號自架選項 |
 | SEC-015 | Medium | CSV 匯出公式注入 | Fixed | 危險前綴加單引號並保留 CSV quoting；公式案例測試 |
-| SEC-011 | Low | logout 使用 GET 改變狀態 | Fixed | POST only、same-origin Origin check、SameSite Cookie |
+| SEC-011 | Low | logout 使用 GET 改變狀態 | Fixed | POST only、Origin 優先的 same-origin 驗證、Fetch Metadata 相容路徑、SameSite Cookie |
 | SEC-012 | Low | lane metadata GET 寫入 last seen | Fixed | GET 唯讀；POST `lane_heartbeat` 更新狀態 |
 | SEC-013 | Low | legacy API 擴大攻擊面 | Fixed | 刪除 `/api/live-event`、writer token、legacy policy 與資料表 |
 | SEC-014 | Low | 資料關聯依賴應用程式 | Fixed | scan key / activity composite foreign keys、lane composite unique、匯入 prevalidation |
@@ -116,8 +116,8 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 - Worker 對一般頁面、API、redirect 與 error response 統一加入 security headers。
 - production HTTPS 加入一年 HSTS。
 - 相機權限只允許 self；microphone、geolocation、payment、USB 與 serial 關閉。
-- logout 只接受 POST 並驗證 Origin。
-- 登入 POST 驗證 Origin。
+- logout 只接受 POST。來源驗證優先比對 Origin；Origin 缺少或為 `null` 時才依序驗證同來源 Referer 與 `Sec-Fetch-Site: same-origin`。
+- 登入 POST 使用相同來源驗證。跨站 Origin 永遠優先拒絕，不會被 Fetch Metadata 覆蓋。
 - lane GET 保持唯讀。last seen 使用經認證的 POST heartbeat。
 
 目前 CSP 為了 Vinext runtime 仍允許 inline script/style。它提供來源、frame、object、form 與 connect 邊界，但不是 strict nonce CSP。框架支援穩定後應改用 nonce/hash。
@@ -170,7 +170,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 |---|---|
 | SQL injection | SQL values 使用 D1 parameter binding。動態 `IN` 只依陣列長度產生 `?`。未發現直接注入路徑。 |
 | XSS | React escaping；source 沒有 `eval`、`new Function`、`innerHTML` 或 `dangerouslySetInnerHTML`。全站 CSP 提供防禦深度。 |
-| CSRF | Admin / lane Cookie 使用 SameSite=Strict。登入與登出驗證 Origin。JSON mutations 不接受 form encoding。 |
+| CSRF | Admin / lane Cookie 使用 SameSite=Strict。登入與登出使用 Origin 優先的 same-origin 驗證；無 Origin 的瀏覽器導覽只接受同來源 Referer 或 Fetch Metadata。JSON mutations 不接受 form encoding。 |
 | SSRF | 未發現由使用者控制任意遠端 URL 的 server fetch。圖片 optimizer 使用同站 asset binding。 |
 | Path traversal | API 不接受 filesystem path。CSV 與背景圖片在瀏覽器處理。 |
 | Secret storage | 管理秘密在 environment；admin / lane session 在 HttpOnly Cookie；D1 只保存 lane token hash。 |
@@ -198,13 +198,13 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 
 | 檢查 | 結果 | 備註 |
 |---|---|---|
-| `npm test` | Pass | TypeScript、production build、42/42 tests |
+| `npm test` | Pass | TypeScript、production build、43/43 tests |
 | `npm run lint` | Pass | 0 errors、0 warnings |
 | `git diff --check` | Pass | 沒有 whitespace errors |
 | `npm audit --omit=dev` | Pass | 0 vulnerabilities |
 | `npm audit` | Mitigated | 2 High；同一個無 patched release 的 `image-size` parser dependency path |
 | migration tests | Pass | expiry、composite FKs、cascade、legacy removal |
-| auth / render tests | Pass | signed expiry session、Cookie、Origin、logout、headers、legacy absence |
+| auth / render tests | Pass | signed expiry session、Cookie、Origin、同來源 Fetch Metadata fallback、跨站拒絕、logout、headers、legacy absence |
 | rate / privacy tests | Pass | 429、Retry-After、匿名 projection、lane DTO allowlist |
 | CSV export tests | Pass | 公式與控制字元前綴中和 |
 | tracked secret pattern scan | Pass | 沒有實際 credential；只保留範例名稱與測試值 |

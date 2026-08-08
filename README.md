@@ -159,7 +159,7 @@ npm run lint
 npm audit --omit=dev
 ```
 
-目前 `npm test` 包含 TypeScript、production build 與 42 項測試。`npm run lint` 已通過 ESLint 與 accessibility 檢查。
+目前 `npm test` 包含 TypeScript、production build 與 43 項測試。`npm run lint` 已通過 ESLint 與 accessibility 檢查。
 
 壓力測試：
 

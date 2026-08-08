@@ -88,6 +88,42 @@ test("password-protects the control center while keeping displays public", async
   assert.match(await wrongPassword.text(), /密碼不正確/);
 });
 
+test("accepts same-origin browser login metadata when Origin is unavailable", async () => {
+  const loginBody = new URLSearchParams({ username: "test-admin", password: "test-password" });
+  const sameOriginResponse = await render("/admin-auth", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "",
+      "sec-fetch-site": "same-origin",
+    },
+    body: loginBody,
+  });
+  assert.equal(sameOriginResponse.status, 303);
+
+  const crossSiteResponse = await render("/admin-auth", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "",
+      "sec-fetch-site": "cross-site",
+    },
+    body: loginBody,
+  });
+  assert.equal(crossSiteResponse.status, 403);
+
+  const conflictingOriginResponse = await render("/admin-auth", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "https://attacker.example",
+      "sec-fetch-site": "same-origin",
+    },
+    body: loginBody,
+  });
+  assert.equal(conflictingOriginResponse.status, 403);
+});
+
 test("logging out ends the public projection without deleting browser records", async () => {
   const cookie = await adminCookie();
   let disabledSharedProjection = false;

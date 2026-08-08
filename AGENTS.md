@@ -152,7 +152,7 @@ npm audit
 - 活動刪除完整 cascade。
 - 150 與 10,000 人範例共用指定 QR Code。
 
-目前 repository 的 TypeScript、production build、42 項測試與 lint 都需要維持通過。
+目前 repository 的 TypeScript、production build、43 項測試與 lint 都需要維持通過。
 
 ## 文件同步
 

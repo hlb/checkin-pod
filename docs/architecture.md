@@ -135,8 +135,8 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 
 | 路徑 | Method | 控制 |
 |---|---|---|
-| `/admin-auth` | POST | same-origin、body 上限、帳號與 IP 限流、HMAC session |
-| `/admin-auth/logout` | POST | same-origin、清除 Cookie、停止公開投影、audit |
+| `/admin-auth` | POST | Origin 優先的 same-origin 驗證、Fetch Metadata 相容路徑、body 上限、帳號與 IP 限流、HMAC session |
+| `/admin-auth/logout` | POST | Origin 優先的 same-origin 驗證、Fetch Metadata 相容路徑、清除 Cookie、停止公開投影、audit |
 | `/`、`/admin` | GET | 有效 admin session |
 | `/scan`、`/projection`、`/benchmark` | GET | 公開頁面；資料 API 各自授權 |
 

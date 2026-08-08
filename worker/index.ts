@@ -44,7 +44,25 @@ function isAdminPath(pathname: string) {
 }
 
 function hasSameOrigin(request: Request, url: URL) {
-  return request.headers.get("origin") === url.origin;
+  const origin = request.headers.get("origin")?.trim();
+  if (origin && origin !== "null") {
+    try {
+      return new URL(origin).origin === url.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  const referer = request.headers.get("referer")?.trim();
+  if (referer) {
+    try {
+      return new URL(referer).origin === url.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  return request.headers.get("sec-fetch-site")?.toLowerCase() === "same-origin";
 }
 
 function redirectToAdmin(cookies?: string | string[]) {
