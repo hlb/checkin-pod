@@ -27,7 +27,7 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 - `drizzle/`：經人工檢查的 forward-only D1 migrations。
 - `tests/`：單元、policy、rendered HTML 與 SQLite 行為測試。
 - `scripts/`：範例資料與壓力測試工具。
-- `docs/`：架構與安全文件。
+- `docs/`：系統架構文件。
 
 ## 工作原則
 

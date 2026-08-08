@@ -243,5 +243,3 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 - Vinext 仍為 beta。升級需要重新執行 production build、render tests 與壓力測試。
 - 管理員支援具名帳號與 audit，沒有內建 MFA、角色或外部 IdP。正式多團隊部署建議在站點前方加入 Cloudflare Access。
 - Web Serial 尚未實作。USB 掃描器使用鍵盤模式。
-
-漏洞通報流程請看 [SECURITY.md](../SECURITY.md)。
