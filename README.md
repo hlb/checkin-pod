@@ -1,57 +1,209 @@
 # Checkin Pod｜活動報到輔助機
 
-Checkin Pod 是支援 Luma 與 KKTIX 的活動報到輔助機：匯入活動來賓 CSV，以 USB 條碼掃描器完成報到，並把結果匯出成 CSV。系統預設使用單機模式，完整名單與報到紀錄保存在管理電腦瀏覽器的 IndexedDB，報到狀態每 5 分鐘備份至伺服器。
+Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位可以匯入 Luma 或 KKTIX CSV，使用 USB 掃描器或電腦鏡頭完成報到，並在投影畫面顯示即時進度。
 
 ![Checkin Pod 活動報到輔助機](docs/assets/checkin-pod-event-check-in-assistant.webp)
 
-## 啟動
+> 專案狀態：開源準備中。Security Review 的程式修正已完成。公開 repository 前仍需確認 Git history 沒有活動資料或秘密，並加入維護者選定的 `LICENSE`。
 
-需要 Node.js 22.13 或更新版本。
+## 主要功能
+
+- 匯入 Luma 與 KKTIX CSV 名單。
+- 支援單機與多機報到模式。
+- 支援 USB 鍵盤模式 QR Code 掃描器。
+- 支援瀏覽器相機掃描。
+- 使用原子資料庫寫入防止多工作站重複報到。
+- 使用本機佇列保存短暫離線期間的掃描。
+- 每場活動使用獨立 `event_id` 保存名單與報到紀錄。
+- 提供活動歷史、活動改名、活動還原與永久刪除。
+- 提供即時投影畫面與現場控制指令。
+- 匯出保留原始欄位的報到結果 CSV。
+- 提供 150 人與 10,000 人測試資料。
+- 提供 10,000 人、50 工作站壓力測試腳本與報告。
+
+## 畫面與權限
+
+| 路徑 | 用途 | 存取方式 |
+|---|---|---|
+| `/` | 中控台 | 管理員密碼 |
+| `/admin` | 中控台別名 | 管理員密碼 |
+| `/scan` | 報到工作站 | 單機瀏覽器資料或工作站連結 |
+| `/projection` | 投影畫面 | 公開 |
+| `/benchmark` | 效能示範 | 公開 |
+
+`/` 與 `/admin` 共用有期限的簽章工作階段 Cookie。`/scan` 的多機連結只在首次啟用時交換工作站權杖，之後使用 HttpOnly Cookie。`/projection` 會公開顯示活動名稱與報到進度，預設使用匿名來賓名稱。管理員可以選擇姓名遮罩或完整姓名。
+
+## 技術組成
+
+- Node.js 22.13+
+- React 19
+- Vinext、Vite
+- Cloudflare Workers runtime
+- Cloudflare D1 / SQLite
+- 經人工檢查的 forward-only SQL migrations
+- IndexedDB、Local Storage、BroadcastChannel
+
+完整元件、資料流與信任邊界請看 [系統架構文件](docs/architecture.md)。
+
+## 本機啟動
+
+需求：Node.js 22.13 或更新版本。
 
 ```bash
 npm install
 cp .env.example .env.local
-# 編輯 .env.local，設定 ADMIN_PASSWORD
+```
+
+編輯 `.env.local`，設定管理員帳號、強密碼與獨立的 session secret：
+
+```dotenv
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=replace-with-a-long-random-password
+SESSION_SECRET=replace-with-at-least-32-random-characters
+```
+
+正式環境也可以用 `ADMIN_USERS_JSON` 建立多個具名帳號。每次登入、登出與管理操作都會寫入 audit log。
+
+啟動開發伺服器：
+
+```bash
 npm run dev
 ```
 
-看到終端機顯示 Local URL 後可使用三個畫面：
+預設畫面：
 
-- 管理畫面：[http://localhost:3000/admin](http://localhost:3000/admin)
-- 來賓掃描畫面：[http://localhost:3000/scan](http://localhost:3000/scan)
-- 投影能量牆：[http://localhost:3000/projection](http://localhost:3000/projection)
-
-`/` 與 `/admin` 需要輸入 `ADMIN_PASSWORD`；來賓與投影畫面維持公開。登入只保留在該瀏覽器工作階段，中控台右上角選單可手動登出。登出會結束公開投影並讓投影牆歸零，本機的名單與報到紀錄仍會保留，之後登入即可繼續使用或匯出。
-
-單機模式的管理畫面與來賓掃描畫面使用同一台電腦上的同一個瀏覽器。多機模式會為每個入口建立獨立工作站連結。正式網站的投影能量牆可在另一台連網電腦開啟相同網域的 `/projection`；使用 localhost 開發時，則以報到電腦的區網 IP（例如 `http://192.168.1.23:3000/projection`）開啟，並確認防火牆允許 Node 接受連線。
+- 中控台：<http://localhost:3000/admin>
+- 報到工作站：<http://localhost:3000/scan>
+- 投影畫面：<http://localhost:3000/projection>
+- 效能示範：<http://localhost:3000/benchmark>
 
 ## 報到模式
 
-- 單機模式：預設選項。掃描與手動報到直接寫入瀏覽器 IndexedDB。報到狀態每 5 分鐘同步至伺服器。中控台會顯示本機與伺服器狀態，並提供「立即同步」按鈕。
-- 多機模式：所有入口使用共用資料庫即時報到。每個工作站使用獨立安全連結，系統以原子寫入防止同一張票重複入場。
+| 項目 | 單機模式 | 多機模式 |
+|---|---|---|
+| 預設 | 是 | 否 |
+| 主要名單 | 管理電腦 IndexedDB | D1 |
+| 報到寫入 | 本機 IndexedDB | D1 原子更新 |
+| 伺服器同步 | 每 5 分鐘與手動同步 | 每筆即時同步 |
+| 工作站數 | 同一瀏覽器 | 每場最多 100 台 |
+| 離線處理 | 本機名單持續運作 | 每工作站保留最多 100 筆待送掃描 |
 
-匯入 CSV 前可選擇報到模式。
+### 單機模式
 
-## 活動歷史
+管理畫面與報到畫面使用同一台電腦、同一個瀏覽器使用者。完整名單保存在 IndexedDB。系統每 5 分鐘同步報到狀態，也提供「立即同步」。
 
-伺服器以獨立 `event_id` 保存每場活動。活動名稱預設使用 CSV 檔名。按「改名」可更新活動名稱，中控台與投影牆會同步顯示。中控台的「活動歷史」顯示最近 100 場活動、報到人數與報到模式。按「載入活動」可在目前裝置還原該場名單與報到狀態，並切換投影牆的目前活動。背景同步只會更新同一場活動的報到狀態。清除本機紀錄會停止該活動的公開投影，伺服器活動歷史仍會保留。永久刪除活動時，系統會要求操作人員複製並貼上專屬確認字串。刪除後，該活動的名單、報到紀錄與工作站連結會一併移除。
+### 多機模式
 
-## 現場使用
+中控台為每個入口建立獨立工作站連結。啟用密鑰位於 URL fragment，不會送進 access log 或 Referer。伺服器交換密鑰後設定 HttpOnly 工作站 Cookie，畫面立即清除網址中的密鑰。D1 使用條件更新完成報到判定。每筆請求使用 `requestId` 保證重送冪等性。工作站可以改名、停用與換發連結。
 
-1. 匯入 Luma 或 KKTIX 匯出的 CSV。Luma 會辨識 `qr_code_url` 與 `approval_status`；KKTIX 會辨識 `QR Code 序號`、`票券付款狀態` 與 `Attendance Book`，只納入可報到的 `approved`／`paid` 來賓並保留既有報到時間。
-2. 在管理畫面的「來賓畫面顯示內容」勾選掃描成功後要顯示的 CSV 欄位。
-3. 開啟來賓掃描畫面，將 XD-2002W 維持在 USB 鍵盤模式。掃描內容會先在瀏覽器原生輸入欄位完成緩衝，收到 Enter 後一次送出。建議設定掃描結尾為 Enter；即使沒有 Enter，完整代碼停頓 0.1 秒後也會自動送出。報到成功／失敗提示音預設關閉，可在右上角「掃描設定」中開啟。使用電腦鏡頭時，鏡頭預覽會在結果顯示期間持續保留，並可直接掃描下一位來賓。
-4. 掃描成功後，來賓畫面會顯示所選資料；管理畫面也會同步顯示目前掃描的人並更新名單。
-5. 在投影電腦開啟 `/projection` 並按「開始投影」。每位已報到來賓會形成一顆專屬星球，星球總數永遠等於已報到人數；新報到者的星球會從畫面外飛入，姓名也會首次登場。中控台另可播放登車廣播或觸發全場彩蛋。
-6. 報到紀錄與顯示設定會即時保存在同一個瀏覽器。關閉後再開啟仍可恢復，重新開啟管理頁時也會把目前狀態送回投影牆。
-7. 按「匯出結果」，原始欄位會保留，並增加 `local_check_in_status` 與 `local_checked_in_at`。
+## CSV 匯入
 
-請固定使用同一台報到電腦、同一個瀏覽器與同一個瀏覽器使用者；清除網站資料或使用私密瀏覽會移除本機紀錄。投影同步只傳送已報到者的姓名、報到時間、總人數與控制指令，不會傳送 Email、電話、QR Code 或問卷內容。活動進行中仍建議定期匯出 CSV 備份。
+系統會辨識常見 Luma 與 KKTIX 欄位，包括：
+
+- 姓名、Email、電話、票種
+- Luma `qr_code_url`、`approval_status`
+- KKTIX QR Code 序號、票券付款狀態、Attendance Book
+- 報名序號、訂單編號與檢查碼
+
+系統會納入可報到狀態。CSV 檔案上限為 50 MB。完整原始欄位保存在單機 IndexedDB，供畫面設定與匯出使用。伺服器只保存報到必要欄位與管理員選取的顯示欄位，單筆最小化 JSON 上限為 20 KB。單場活動上限為 10,000 人。
+
+CSV 匯出會中和 `=`、`+`、`-`、`@` 與控制字元開頭的試算表公式，並保留標準 CSV quoting。
+
+## 範例資料
+
+首頁提供兩份 ZIP：
+
+- `public/checkin-pod-sample-150.zip`
+- `public/checkin-pod-sample-10000.zip`
+
+兩份資料的前 150 位來賓共用 QR Code。ZIP 內提供第 101–110 位的測試 QR 圖。
+
+重新產生範例前，請安裝系統指令 `qrencode` 與 `zip`：
+
+```bash
+npm run sample:generate
+```
+
+所有提交至 repository 的 CSV 與 QR 圖都必須使用合成資料。活動主辦單位的真實名單不得提交至 Git。
+
+## 現場操作
+
+1. 匯入 CSV，選擇單機或多機模式。
+2. 設定來賓畫面要顯示的欄位。
+3. 開啟 `/scan`，使用掃描器或相機完成報到。
+4. 在投影電腦開啟 `/projection`，按「開始投影」。
+5. 活動進行中定期匯出 CSV 備份。
+6. 活動結束後依資料保存政策匯出或刪除活動。
+
+USB 掃描器目前使用鍵盤輸入模式。掃描結尾建議設定為 Enter。Web Serial 尚未實作。
+
+localhost 環境的投影電腦可以使用報到電腦的區網 IP，例如 `http://192.168.1.23:3000/projection`。主機防火牆需要允許 Node 接受區網連線。
+
+## 資料保存
+
+- IndexedDB 保存單機完整名單、報到狀態與顯示設定。
+- Local Storage 保存非秘密的工作站識別資料與最多 100 筆待送掃描。工作站權杖保存在 HttpOnly Cookie。
+- D1 保存活動、最小化參加者資料、掃描鍵雜湊、工作站權杖雜湊、報到紀錄與管理操作 audit log。
+- 公開投影 API 提供活動名稱、總人數、公開顯示名稱、報到時間與投影指令。公開 ID 不使用內部 attendee ID。
+- 每場活動預設保留 30 天。請求處理與每日排程會刪除到期活動及其關聯資料。
+- 永久刪除活動會串聯刪除該活動的參加者、掃描鍵、工作站與活動紀錄。
+
+部署單位需要建立資料保存期限、隱私告知與刪除流程。詳細風險與建議請看 [Security Review](docs/security-review.md)。
 
 ## 驗證
 
 ```bash
 npm test
+npm run lint
+npm audit --omit=dev
 ```
 
-如需重新產生 150 人與 10,000 人範例 ZIP，請先安裝系統指令 `qrencode` 與 `zip`，再執行 `npm run sample:generate`。兩份範例的前 150 位來賓使用相同 QR Code，ZIP 內第 101–110 位的測試 QR 圖可共用。
+目前 `npm test` 包含 TypeScript、production build 與 42 項測試。`npm run lint` 已通過 ESLint 與 accessibility 檢查。
+
+壓力測試：
+
+```bash
+npm run dev
+npm run stress
+```
+
+目前保存的基準結果為 10,000 人、50 工作站、10,542 個掃描 API 請求，平均 `496.86 req/s`，p95 `135.3 ms`。完整結果在 [壓力測試報告](reports/stress-test-10000x50.md)。
+
+## 常用指令
+
+| 指令 | 用途 |
+|---|---|
+| `npm run dev` | 啟動開發環境 |
+| `npm run build` | 建立 production bundle |
+| `npm start` | 啟動本機 production server |
+| `npm test` | 執行型別、建置與測試 |
+| `npm run lint` | 執行 ESLint 與 accessibility 檢查 |
+| `npm run stress` | 執行多工作站壓力測試 |
+| `npm run sample:generate` | 重新產生合成範例資料 |
+
+## 部署
+
+目前 repository 使用 `.openai/hosting.json` 定義 Sites 專案與 D1 binding。`worker/index.ts` 是 Cloudflare Worker 入口。部署環境需要提供：
+
+- `ADMIN_USERNAME` 與 `ADMIN_PASSWORD`，或 `ADMIN_USERS_JSON`
+- 至少 32 個字元的獨立 `SESSION_SECRET`
+- 名稱為 `DB` 的 D1 binding
+- `LOGIN_RATE_LIMITER`、`SCAN_RATE_LIMITER`、`SCAN_IP_RATE_LIMITER`、`UNKNOWN_SCAN_RATE_LIMITER` 與 `UNKNOWN_SCAN_IP_RATE_LIMITER` bindings
+- 靜態資產 binding
+- HTTPS
+
+production config 已定義每天 `03:17 UTC` 的資料保存排程。本次安全版本採清空重建策略，不保留舊活動資料：先執行 `scripts/reset-d1.sql`，再部署新 Worker，最後請求一次 projection API 觸發 runtime schema 建立。`drizzle/*.sql` 保留給 migration 測試與需要保留既有資料的部署者。
+
+```bash
+npx wrangler d1 execute <database-name> --remote --file scripts/reset-d1.sql
+```
+
+reset 會永久刪除活動、參加者、QR scan keys、工作站、報到紀錄、audit 與 legacy projection 資料。部署完成後，請驗證登入、登出、限流、安全標頭、CSV 匯入、單機同步、多機工作站、投影、活動還原、到期清除與永久刪除。
+
+## 參與開發
+
+請先閱讀 [AGENTS.md](AGENTS.md)、[系統架構文件](docs/architecture.md) 與 [Security Review](docs/security-review.md)。變更需要保留單機與多機的一致性、掃描冪等性、每場活動隔離與參加者資料最小化。
+
+## 授權
+
+專案尚未選擇開源授權。加入 `LICENSE` 前，原始碼保留所有權利。維護者需要在公開 repository 前選擇並加入授權條款，例如 MIT 或 Apache-2.0。

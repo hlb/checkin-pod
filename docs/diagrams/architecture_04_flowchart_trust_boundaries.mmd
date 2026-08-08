@@ -1,0 +1,58 @@
+flowchart LR
+    subgraph PUBLIC["公開網路"]
+        VIEWER["投影觀眾"]
+        GUEST["來賓 / QR Code"]
+        ATTACKER["未受信任流量"]
+    end
+
+    subgraph DEVICE["活動裝置 / Browser origin"]
+        ADMIN_UI["管理 UI<br/>完整 PII"]
+        LANE_UI["工作站 UI<br/>lane scope"]
+        PROJECTION_UI["投影 UI<br/>公開資料"]
+        STORAGE["💾 IndexedDB / Local Storage<br/>PII、識別與待送佇列"]
+        COOKIES["🔐 HttpOnly cookies<br/>瀏覽器 JS 無法讀取"]
+    end
+
+    subgraph EDGE["Worker 信任邊界"]
+        AUTH["🔐 HMAC 管理 session<br/>8 小時期限"]
+        LANE_AUTH["🔑 lane cookie 與 token hash 驗證"]
+        VALIDATE["🛡️ 輸入上限、限流與 SQL binding"]
+        PUBLIC_API["📊 公開 projection API<br/>預設匿名"]
+    end
+
+    subgraph DATA["D1 信任邊界"]
+        PII[("參加者 PII<br/>allowlisted JSON")]
+        HASH[("scan key hash<br/>lane token hash")]
+        LOG[("activity 與 admin audit")]
+    end
+
+    VIEWER --> PROJECTION_UI
+    GUEST --> LANE_UI
+    ATTACKER --> AUTH
+    ATTACKER --> LANE_AUTH
+    ATTACKER --> PUBLIC_API
+    ADMIN_UI <--> STORAGE
+    LANE_UI <--> STORAGE
+    AUTH --> COOKIES
+    LANE_AUTH --> COOKIES
+    ADMIN_UI --> AUTH
+    LANE_UI --> LANE_AUTH
+    AUTH --> VALIDATE
+    LANE_AUTH --> VALIDATE
+    VALIDATE <--> PII
+    VALIDATE <--> HASH
+    VALIDATE <--> LOG
+    PUBLIC_API --> PII
+    PUBLIC_API --> PROJECTION_UI
+
+    classDef untrusted fill:#FFF3D6,stroke:#7A4B00,stroke-width:2px,color:#251700
+    classDef browser fill:#E8F2FF,stroke:#0B4F8A,stroke-width:2px,color:#071E33
+    classDef control fill:#E8F8EE,stroke:#176B3A,stroke-width:2px,color:#092617
+    classDef sensitive fill:#FFF0F4,stroke:#9A2A50,stroke-width:2px,color:#350D1B
+    classDef secret fill:#F3E8FF,stroke:#68419B,stroke-width:2px,color:#241238
+
+    class VIEWER,GUEST,ATTACKER untrusted
+    class ADMIN_UI,LANE_UI,PROJECTION_UI,STORAGE browser
+    class AUTH,LANE_AUTH,VALIDATE,PUBLIC_API control
+    class PII,LOG sensitive
+    class HASH secret

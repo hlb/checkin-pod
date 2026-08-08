@@ -6,6 +6,8 @@ export const SHARED_SCHEMA_SQL = [
     headers_json TEXT NOT NULL,
     selected_fields_json TEXT NOT NULL,
     background_color TEXT NOT NULL DEFAULT '#0E0F12',
+    projection_privacy TEXT NOT NULL DEFAULT 'count'
+      CHECK(projection_privacy IN ('count', 'masked', 'names')),
     sync_mode TEXT NOT NULL DEFAULT 'multi' CHECK(sync_mode IN ('single', 'multi')),
     total INTEGER NOT NULL DEFAULT 0 CHECK(total >= 0 AND total <= 10000),
     status TEXT NOT NULL DEFAULT 'importing' CHECK(status IN ('importing', 'active')),
@@ -14,10 +16,13 @@ export const SHARED_SCHEMA_SQL = [
     cue_type TEXT,
     cue_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE INDEX IF NOT EXISTS checkin_events_active_idx
     ON checkin_events(active, status)`,
+  `CREATE INDEX IF NOT EXISTS checkin_events_expires_idx
+    ON checkin_events(expires_at)`,
   `CREATE TABLE IF NOT EXISTS checkin_attendees (
     event_id TEXT NOT NULL,
     attendee_id TEXT NOT NULL,
@@ -44,7 +49,9 @@ export const SHARED_SCHEMA_SQL = [
     key_hash TEXT NOT NULL,
     attendee_id TEXT NOT NULL,
     PRIMARY KEY(event_id, key_hash),
-    FOREIGN KEY(event_id) REFERENCES checkin_events(event_id) ON DELETE CASCADE
+    FOREIGN KEY(event_id) REFERENCES checkin_events(event_id) ON DELETE CASCADE,
+    FOREIGN KEY(event_id, attendee_id)
+      REFERENCES checkin_attendees(event_id, attendee_id) ON DELETE CASCADE
   )`,
   `CREATE INDEX IF NOT EXISTS checkin_scan_keys_lookup_idx
     ON checkin_scan_keys(event_id, key_hash)`,
@@ -62,6 +69,8 @@ export const SHARED_SCHEMA_SQL = [
     ON checkin_lanes(token_hash)`,
   `CREATE INDEX IF NOT EXISTS checkin_lanes_event_idx
     ON checkin_lanes(event_id, revoked_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS checkin_lanes_event_lane_idx
+    ON checkin_lanes(event_id, lane_id)`,
   `CREATE TABLE IF NOT EXISTS checkin_activity (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT NOT NULL,
@@ -71,12 +80,29 @@ export const SHARED_SCHEMA_SQL = [
     checked_in_at TEXT,
     occurred_at TEXT NOT NULL,
     request_id TEXT NOT NULL,
-    FOREIGN KEY(event_id) REFERENCES checkin_events(event_id) ON DELETE CASCADE
+    FOREIGN KEY(event_id) REFERENCES checkin_events(event_id) ON DELETE CASCADE,
+    FOREIGN KEY(event_id, attendee_id)
+      REFERENCES checkin_attendees(event_id, attendee_id),
+    FOREIGN KEY(event_id, lane_id)
+      REFERENCES checkin_lanes(event_id, lane_id)
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS checkin_activity_request_idx
     ON checkin_activity(event_id, request_id)`,
   `CREATE INDEX IF NOT EXISTS checkin_activity_event_cursor_idx
     ON checkin_activity(event_id, id)`,
+  `CREATE TABLE IF NOT EXISTS checkin_admin_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    event_id TEXT,
+    occurred_at TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}'
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS checkin_admin_audit_request_idx
+    ON checkin_admin_audit(request_id)`,
+  `CREATE INDEX IF NOT EXISTS checkin_admin_audit_event_idx
+    ON checkin_admin_audit(event_id, occurred_at)`,
 ] as const;
 
 export const ATOMIC_CHECK_IN_SQL = `UPDATE checkin_attendees

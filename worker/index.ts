@@ -1,17 +1,25 @@
-/** Cloudflare Worker entry point for the vinext-starter template. */
+/** Cloudflare Worker entry point for Checkin Pod. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import {
   adminCookie,
-  adminSessionToken,
+  adminSessionFromRequest,
   clearAdminCookies,
+  createAdminSessionToken,
   hasValidAdminSession,
   sha256Hex,
   constantTimeEqual,
 } from "../app/admin-auth";
+import { readLimitedText } from "../app/request-body";
+
+type RateLimiter = { limit(options: { key: string }): Promise<{ success: boolean }> };
 
 interface Env {
   ADMIN_PASSWORD?: string;
+  ADMIN_USERNAME?: string;
+  ADMIN_USERS_JSON?: string;
+  SESSION_SECRET?: string;
+  LOGIN_RATE_LIMITER?: RateLimiter;
   ASSETS: Fetcher;
   DB: D1Database;
   IMAGES: {
@@ -28,8 +36,15 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
+type LocalRateWindow = { startedAt: number; count: number };
+const localRateWindows = new Map<string, LocalRateWindow>();
+
 function isAdminPath(pathname: string) {
   return pathname === "/" || pathname === "/admin" || pathname.startsWith("/admin/");
+}
+
+function hasSameOrigin(request: Request, url: URL) {
+  return request.headers.get("origin") === url.origin;
 }
 
 function redirectToAdmin(cookies?: string | string[]) {
@@ -40,25 +55,103 @@ function redirectToAdmin(cookies?: string | string[]) {
   return new Response(null, { status: 303, headers });
 }
 
-async function clearPublishedLiveEvent(database: D1Database) {
-  await database
-    .prepare("DELETE FROM live_event_state WHERE id = ?")
-    .bind(1)
-    .run();
+function localRateLimit(key: string, limit: number, periodMs: number) {
+  const now = Date.now();
+  const current = localRateWindows.get(key);
+  if (!current || now - current.startedAt >= periodMs) {
+    localRateWindows.set(key, { startedAt: now, count: 1 });
+    return true;
+  }
+  current.count += 1;
+  if (localRateWindows.size > 5_000) {
+    for (const [candidate, window] of localRateWindows) {
+      if (now - window.startedAt >= periodMs) localRateWindows.delete(candidate);
+    }
+  }
+  return current.count <= limit;
+}
+
+function clientAddress(request: Request) {
+  return request.headers.get("cf-connecting-ip")?.trim().slice(0, 64) || "unknown";
+}
+
+async function withinRateLimit(
+  binding: RateLimiter | undefined,
+  key: string,
+  fallbackLimit: number,
+  fallbackPeriodMs: number,
+) {
+  if (binding) return (await binding.limit({ key })).success;
+  return localRateLimit(key, fallbackLimit, fallbackPeriodMs);
+}
+
+function configuredAdminCredential(env: Env, username: string) {
+  if (env.ADMIN_USERS_JSON) {
+    try {
+      const users = JSON.parse(env.ADMIN_USERS_JSON) as unknown;
+      if (users && typeof users === "object" && !Array.isArray(users)) {
+        const password = (users as Record<string, unknown>)[username];
+        if (typeof password === "string" && password.length) return { username, password };
+      }
+    } catch {
+      return null;
+    }
+  }
+  if (env.ADMIN_USERNAME && env.ADMIN_PASSWORD) {
+    return { username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD };
+  }
+  return null;
+}
+
+function hasAdminCredentials(env: Env) {
+  return Boolean(env.ADMIN_USERS_JSON || env.ADMIN_USERNAME && env.ADMIN_PASSWORD);
+}
+
+async function deactivateSharedProjection(database: D1Database) {
   try {
-    await database
-      .prepare("UPDATE checkin_events SET active = 0, updated_at = ? WHERE active = 1")
-      .bind(new Date().toISOString())
-      .run();
+    await database.prepare("UPDATE checkin_events SET active = 0, updated_at = ? WHERE active = 1")
+      .bind(new Date().toISOString()).run();
   } catch {
-    // Older databases may not have the shared check-in tables yet.
+    // Older local databases may not have the shared check-in tables yet.
   }
 }
 
-function adminLoginPage(message = "", status = 200) {
+async function purgeExpiredSharedEvents(database: D1Database) {
+  const result = await database.prepare(`DELETE FROM checkin_events
+    WHERE expires_at <> '' AND expires_at <= ?`).bind(new Date().toISOString()).run();
+  console.log("retention_cleanup_complete", { deleted: result.meta.changes });
+}
+
+async function recordWorkerAudit(database: D1Database, actor: string, action: string, request: Request) {
+  try {
+    await database.prepare(`CREATE TABLE IF NOT EXISTS checkin_admin_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      event_id TEXT,
+      occurred_at TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}'
+    )`).run();
+    await database.prepare(`INSERT INTO checkin_admin_audit
+        (actor, action, event_id, occurred_at, request_id, details_json)
+      VALUES (?, ?, NULL, ?, ?, ?)`)
+      .bind(
+        actor.slice(0, 120),
+        action,
+        new Date().toISOString(),
+        crypto.randomUUID(),
+        JSON.stringify({ sourceHash: await sha256Hex(clientAddress(request)) }),
+      ).run();
+  } catch {
+    // Authentication remains available if the audit store is temporarily unavailable.
+  }
+}
+
+function adminLoginPage(message = "", status = 200, extraHeaders?: HeadersInit) {
   const error = message
     ? `<p class="error" role="alert">${message}</p>`
-    : `<p class="hint">輸入現場工作人員密碼後繼續</p>`;
+    : `<p class="hint">輸入管理員帳號與密碼後繼續</p>`;
   const html = `<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -67,7 +160,7 @@ function adminLoginPage(message = "", status = 200) {
   <meta name="theme-color" content="#173b2a" />
   <title>Checkin Pod｜中控台登入</title>
   <style>
-    *{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;color:#172019;background:#f4f1e8;font-family:Inter,system-ui,-apple-system,"Noto Sans TC","PingFang TC",sans-serif}.card{width:min(420px,100%);padding:38px;background:#fff;border:1px solid #d8d9ce;border-radius:24px 24px 24px 8px;box-shadow:0 24px 80px rgba(29,48,34,.12)}.mark{width:48px;height:48px;display:grid;place-items:center;color:#fff;background:#f46f3a;border-radius:15px 15px 15px 4px;font-size:24px;font-weight:900;transform:rotate(-2deg)}.eyebrow{margin:26px 0 8px;color:#d75225;font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase}h1{margin:0;font-family:Georgia,"Noto Serif TC",serif;font-size:34px}.hint,.error{min-height:24px;margin:10px 0 22px;color:#6f776f;font-size:13px}.error{color:#a43e2e;font-weight:750}label{display:block;margin-bottom:8px;font-size:12px;font-weight:850}input{width:100%;height:50px;padding:0 14px;border:1px solid #cfd4cc;border-radius:11px;background:#fbfaf5;font:inherit;outline:none}input:focus{border-color:#285a40;box-shadow:0 0 0 3px rgba(40,90,64,.13)}button{width:100%;height:50px;margin-top:14px;border:0;border-radius:11px;color:#fff;background:#173b2a;font:inherit;font-weight:850;cursor:pointer}button:hover{background:#0e2d1e}.public-links{margin:24px 0 0;padding-top:20px;border-top:1px solid #e5e4dc;display:flex;gap:18px}.public-links a{color:#526157;font-size:12px;font-weight:750;text-decoration:none}.public-links a:hover{color:#173b2a}
+    *{box-sizing:border-box}body{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px;color:#172019;background:#f4f1e8;font-family:Inter,system-ui,-apple-system,"Noto Sans TC","PingFang TC",sans-serif}.card{width:min(420px,100%);padding:38px;background:#fff;border:1px solid #d8d9ce;border-radius:24px 24px 24px 8px;box-shadow:0 24px 80px rgba(29,48,34,.12)}.mark{width:48px;height:48px;display:grid;place-items:center;color:#fff;background:#f46f3a;border-radius:15px 15px 15px 4px;font-size:24px;font-weight:900;transform:rotate(-2deg)}.eyebrow{margin:26px 0 8px;color:#d75225;font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase}h1{margin:0;font-family:Georgia,"Noto Serif TC",serif;font-size:34px}.hint,.error{min-height:24px;margin:10px 0 22px;color:#6f776f;font-size:13px}.error{color:#a43e2e;font-weight:750}label{display:block;margin:12px 0 8px;font-size:12px;font-weight:850}input{width:100%;height:50px;padding:0 14px;border:1px solid #cfd4cc;border-radius:11px;background:#fbfaf5;font:inherit;outline:none}input:focus{border-color:#285a40;box-shadow:0 0 0 3px rgba(40,90,64,.13)}button{width:100%;height:50px;margin-top:18px;border:0;border-radius:11px;color:#fff;background:#173b2a;font:inherit;font-weight:850;cursor:pointer}button:hover{background:#0e2d1e}.public-links{margin:24px 0 0;padding-top:20px;border-top:1px solid #e5e4dc;display:flex;gap:18px}.public-links a{color:#526157;font-size:12px;font-weight:750;text-decoration:none}.public-links a:hover{color:#173b2a}
   </style>
 </head>
 <body>
@@ -77,8 +170,10 @@ function adminLoginPage(message = "", status = 200) {
     <h1>Checkin Pod</h1>
     ${error}
     <form method="post" action="/admin-auth">
-      <label for="password">工作人員密碼</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required autofocus />
+      <label for="username">管理員帳號</label>
+      <input id="username" name="username" type="text" autocomplete="username" maxlength="120" required />
+      <label for="password">管理員密碼</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required />
       <button type="submit">進入中控台</button>
     </form>
     <nav class="public-links" aria-label="公開畫面">
@@ -89,76 +184,142 @@ function adminLoginPage(message = "", status = 200) {
   </main>
 </body>
 </html>`;
-  return new Response(html, {
-    status,
-    headers: {
-      "cache-control": "no-store, max-age=0",
-      "content-type": "text/html; charset=utf-8",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
-      "x-frame-options": "DENY",
-    },
+  const headers = new Headers(extraHeaders);
+  headers.set("cache-control", "no-store, max-age=0");
+  headers.set("content-type", "text/html; charset=utf-8");
+  headers.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+  headers.set("referrer-policy", "no-referrer");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("x-frame-options", "DENY");
+  return new Response(html, { status, headers });
+}
+
+function withSecurityHeaders(response: Response, request: Request) {
+  const headers = new Headers(response.headers);
+  if (!headers.has("content-security-policy")) {
+    headers.set("content-security-policy", [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "media-src 'self' blob:",
+      "connect-src 'self'",
+      "worker-src 'self' blob:",
+      "manifest-src 'self'",
+    ].join("; "));
+  }
+  headers.set("referrer-policy", "no-referrer");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("x-frame-options", "DENY");
+  headers.set("permissions-policy", "camera=(self), microphone=(), geolocation=(), payment=(), usb=(), serial=()");
+  headers.set("cross-origin-opener-policy", "same-origin");
+  headers.set("cross-origin-resource-policy", "same-origin");
+  if (new URL(request.url).protocol === "https:") {
+    headers.set("strict-transport-security", "max-age=31536000; includeSubDomains");
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
-// Image security config. SVG sources with .svg extension auto-skip the
-// optimization endpoint on the client side (served directly, no proxy).
-// To route SVGs through the optimizer (with security headers), set
-// dangerouslyAllowSVG: true in next.config.js and uncomment below:
-// const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
+async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const url = new URL(request.url);
+  const secure = url.protocol === "https:";
+
+  if (url.pathname === "/admin-auth/logout") {
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
+    }
+    if (!hasSameOrigin(request, url)) return new Response("Forbidden", { status: 403 });
+    const session = await adminSessionFromRequest(request, env.SESSION_SECRET);
+    if (session) {
+      try {
+        await deactivateSharedProjection(env.DB);
+        await recordWorkerAudit(env.DB, session.sub, "admin.logout", request);
+      } catch {
+        return adminLoginPage("無法結束公開投影，請稍後再試。", 503);
+      }
+    }
+    return redirectToAdmin(clearAdminCookies(secure));
+  }
+
+  if (url.pathname === "/admin-auth") {
+    if (request.method !== "POST") return redirectToAdmin();
+    if (!hasSameOrigin(request, url)) return adminLoginPage("登入來源無效。", 403);
+    if (!hasAdminCredentials(env)) {
+      return adminLoginPage("管理員帳號或密碼尚未設定。", 503);
+    }
+    if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32) {
+      return adminLoginPage("SESSION_SECRET 需要至少 32 個字元。", 503);
+    }
+    if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+      return adminLoginPage("登入資料格式無效。", 415);
+    }
+    const rawForm = await readLimitedText(request, 4_096);
+    if (!rawForm.ok) {
+      return adminLoginPage(
+        rawForm.reason === "too_large" ? "登入資料過大。" : "登入資料無效。",
+        rawForm.reason === "too_large" ? 413 : 400,
+      );
+    }
+    const formData = new URLSearchParams(rawForm.value);
+    const suppliedUsername = (formData.get("username") ?? "").trim().slice(0, 120);
+    const rateKeys = [
+      `admin-login:account:${suppliedUsername.toLowerCase() || "unknown"}`,
+      `admin-login:ip:${clientAddress(request)}`,
+    ];
+    const rateChecks = await Promise.all(rateKeys.map((key) =>
+      withinRateLimit(env.LOGIN_RATE_LIMITER, key, 10, 60_000)));
+    if (rateChecks.some((allowed) => !allowed)) {
+      return adminLoginPage("登入嘗試次數已達上限，請在 60 秒後再試。", 429, { "retry-after": "60" });
+    }
+    const suppliedPassword = formData.get("password");
+    const credential = configuredAdminCredential(env, suppliedUsername);
+    const [suppliedPasswordHash, expectedPasswordHash] = await Promise.all([
+      sha256Hex(suppliedPassword ?? ""),
+      sha256Hex(credential?.password ?? env.SESSION_SECRET),
+    ]);
+    if (!credential || !constantTimeEqual(suppliedPasswordHash, expectedPasswordHash)) {
+      return adminLoginPage("帳號或密碼不正確，請再試一次。", 401);
+    }
+    const token = await createAdminSessionToken(env.SESSION_SECRET, credential.username);
+    await recordWorkerAudit(env.DB, credential.username, "admin.login", request);
+    return redirectToAdmin(adminCookie(token, secure));
+  }
+
+  if (isAdminPath(url.pathname)) {
+    if (!hasAdminCredentials(env) || !env.SESSION_SECRET) {
+      return adminLoginPage("管理員登入設定尚未完成。", 503);
+    }
+    if (!(await hasValidAdminSession(request, env.SESSION_SECRET))) return adminLoginPage();
+  }
+
+  if (url.pathname === "/_vinext/image") {
+    const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
+    return handleImageOptimization(request, {
+      fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
+      transformImage: async (body, { width, format, quality }) => {
+        const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
+        return result.response();
+      },
+    }, allowedWidths);
+  }
+
+  return handler.fetch(request, env, ctx);
+}
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/admin-auth/logout") {
-      if (
-        env.ADMIN_PASSWORD &&
-        (await hasValidAdminSession(request, env.ADMIN_PASSWORD))
-      ) {
-        try {
-          await clearPublishedLiveEvent(env.DB);
-        } catch {
-          return adminLoginPage("無法結束公開投影，請稍後再試。", 503);
-        }
-      }
-      return redirectToAdmin(clearAdminCookies(url.protocol === "https:"));
-    }
-
-    if (url.pathname === "/admin-auth") {
-      if (request.method !== "POST") return redirectToAdmin();
-      if (!env.ADMIN_PASSWORD) return adminLoginPage("中控台密碼尚未設定。", 503);
-      const contentLength = Number(request.headers.get("content-length") ?? 0);
-      if (contentLength > 4_096) return adminLoginPage("登入資料過大。", 413);
-      const formData = await request.formData().catch(() => null);
-      const suppliedPassword = formData?.get("password");
-      const suppliedHash = await sha256Hex(typeof suppliedPassword === "string" ? suppliedPassword : "");
-      const expectedHash = await sha256Hex(env.ADMIN_PASSWORD);
-      if (!constantTimeEqual(suppliedHash, expectedHash)) {
-        return adminLoginPage("密碼不正確，請再試一次。", 401);
-      }
-      const token = await adminSessionToken(env.ADMIN_PASSWORD);
-      return redirectToAdmin(adminCookie(token, url.protocol === "https:"));
-    }
-
-    if (isAdminPath(url.pathname)) {
-      if (!env.ADMIN_PASSWORD) return adminLoginPage("中控台密碼尚未設定。", 503);
-      if (!(await hasValidAdminSession(request, env.ADMIN_PASSWORD))) return adminLoginPage();
-    }
-
-    if (url.pathname === "/_vinext/image") {
-      const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
-      return handleImageOptimization(request, {
-        fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
-        transformImage: async (body, { width, format, quality }) => {
-          const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
-          return result.response();
-        },
-      }, allowedWidths);
-    }
-
-    return handler.fetch(request, env, ctx);
+    return withSecurityHeaders(await handleRequest(request, env, ctx), request);
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(purgeExpiredSharedEvents(env.DB));
   },
 };
 

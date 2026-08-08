@@ -4,10 +4,11 @@ import test from "node:test";
 
 import {
   applyScanToEvent,
+  csvEscape,
   defaultDisplayFields,
   filterEligibleAttendees,
   labelForField,
-  liveSnapshotFromEvent,
+  minimizeOriginalRow,
   parseCsv,
   scanKeysFor,
   toAttendees,
@@ -40,7 +41,6 @@ function sampleEvent() {
     headers: Object.keys(rows[0]),
     attendees: toAttendees(rows, importedAt),
     revision: 4,
-    writerToken: "private-writer-token",
   };
 }
 
@@ -50,6 +50,16 @@ test("parses quoted Luma CSV values and preserves embedded newlines", () => {
   assert.equal(parsed.rows[0].name, "王, 小明");
   assert.equal(parsed.rows[0].note, "第一行\n第二行");
   assert.throws(() => parseCsv('id,name\n1,"未結束'), /未關閉的引號/);
+});
+
+test("neutralizes spreadsheet formulas in exported CSV cells", () => {
+  assert.equal(csvEscape("=HYPERLINK(\"https://example.test\")"), "\"'=HYPERLINK(\"\"https://example.test\"\")\"");
+  assert.equal(csvEscape("+cmd"), "'+cmd");
+  assert.equal(csvEscape("-1+1"), "'-1+1");
+  assert.equal(csvEscape("@SUM(1,2)"), "\"'@SUM(1,2)\"");
+  assert.equal(csvEscape("  =1+1"), "'  =1+1");
+  assert.equal(csvEscape("\t=1+1"), "'\t=1+1");
+  assert.equal(csvEscape("一般票"), "一般票");
 });
 
 test("derives scan keys from the full QR URL, pk, email, and guest id", () => {
@@ -130,12 +140,20 @@ test("reports duplicate and unknown scans without changing an existing check-in 
   assert.equal(unknown.event.revision, 7);
 });
 
-test("projection snapshots contain only checked-in public fields and the revision", () => {
-  const checked = applyScanToEvent(sampleEvent(), "alpha", "2026-08-07T02:00:00.000Z").event;
-  const snapshot = liveSnapshotFromEvent(checked);
+test("minimizes server-bound original rows to operational and selected fields", () => {
+  const minimized = minimizeOriginalRow({
+    name: "王小明",
+    email: "ming@example.com",
+    qr_code_url: "https://lu.ma/check-in?pk=alpha",
+    company: "Example Co.",
+    dietary_notes: "私人飲食備註",
+  }, ["company"]);
 
-  assert.equal(snapshot.revision, 5);
-  assert.equal(snapshot.attendees.length, 1);
-  assert.deepEqual(Object.keys(snapshot.attendees[0]).sort(), ["checkedInAt", "id", "name"]);
-  assert.doesNotMatch(JSON.stringify(snapshot), /ming@example\.com|private-writer-token/);
+  assert.deepEqual(minimized, {
+    name: "王小明",
+    email: "ming@example.com",
+    qr_code_url: "https://lu.ma/check-in?pk=alpha",
+    company: "Example Co.",
+  });
+  assert.equal("dietary_notes" in minimized, false);
 });

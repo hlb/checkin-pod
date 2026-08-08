@@ -15,9 +15,10 @@ import {
   readBackgroundImageDataUrl,
   readSavedEvent,
   scanKeysFor,
+  writeSavedEvent,
 } from "../checkin-core";
-import { SharedApiError, readSharedLane, scanSharedEventWithRetry } from "../shared-checkin";
-import type { SharedLaneSession } from "../shared-checkin";
+import { SharedApiError, activateSharedLane, readSharedLane, scanSharedEventWithRetry } from "../shared-checkin";
+import type { SharedAttendeeResult, SharedLaneBootstrap, SharedLaneSession } from "../shared-checkin";
 import {
   appendPendingScan,
   parsePendingScans,
@@ -27,7 +28,7 @@ import type { PendingScan } from "../scan-queue";
 
 type GuestResult = {
   kind: LastScan["kind"];
-  attendee?: Attendee;
+  attendee?: Attendee | SharedAttendeeResult;
   at: string;
 };
 
@@ -64,6 +65,11 @@ function guestResultFromSavedEvent(saved: SavedEvent | null): GuestResult | null
   }
   if (!attendee) return null;
   return { kind: saved.lastScan.kind, attendee, at: saved.lastScan.at };
+}
+
+function guestDisplayValue(attendee: Attendee | SharedAttendeeResult, field: string) {
+  if ("displayValues" in attendee) return attendee.displayValues[field]?.trim() || "—";
+  return displayValue(attendee, field);
 }
 
 export default function ScanPage() {
@@ -266,23 +272,26 @@ export default function ScanPage() {
   const refreshEvent = useCallback(async () => {
     let hasRemoteSession = false;
     try {
-      const query = new URLSearchParams(window.location.search);
-      const querySession = query.get("event") && query.get("lane") && query.get("token")
+      const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const legacyQuery = new URLSearchParams(window.location.search);
+      const bootstrapParams = fragment.get("token") ? fragment : legacyQuery;
+      const bootstrapSession: SharedLaneBootstrap | null = bootstrapParams.get("event")
+        && bootstrapParams.get("lane")
+        && bootstrapParams.get("token")
         ? {
-            eventId: query.get("event")!,
-            laneId: query.get("lane")!,
-            laneToken: query.get("token")!,
+            eventId: bootstrapParams.get("event")!,
+            laneId: bootstrapParams.get("lane")!,
+            laneToken: bootstrapParams.get("token")!,
             laneName: "報到工作站",
           }
         : null;
       let storedSession: SharedLaneSession | null = null;
       try {
         const parsed = JSON.parse(window.localStorage.getItem(LANE_SESSION_KEY) ?? "null") as Partial<SharedLaneSession> | null;
-        if (parsed?.eventId && parsed.laneId && parsed.laneToken) {
+        if (parsed?.eventId && parsed.laneId) {
           storedSession = {
             eventId: parsed.eventId,
             laneId: parsed.laneId,
-            laneToken: parsed.laneToken,
             laneName: parsed.laneName ?? "報到工作站",
           };
         }
@@ -290,28 +299,50 @@ export default function ScanPage() {
         window.localStorage.removeItem(LANE_SESSION_KEY);
       }
       const saved = await readSavedEvent();
-      if (!querySession && saved) {
+      if (!bootstrapSession && saved) {
+        let preparedSaved = saved;
+        if (saved.sharedEvent?.laneToken) {
+          const metadata = await activateSharedLane({
+            eventId: saved.sharedEvent.eventId,
+            laneId: saved.sharedEvent.laneId,
+            laneName: saved.sharedEvent.laneName,
+            laneToken: saved.sharedEvent.laneToken,
+          });
+          const sanitizedConnection = { ...saved.sharedEvent };
+          delete sanitizedConnection.laneToken;
+          preparedSaved = { ...saved, sharedEvent: { ...sanitizedConnection, laneName: metadata.laneName } };
+          await writeSavedEvent(preparedSaved);
+        }
         const background = await readBackgroundImageDataUrl();
-        setEvent(saved);
-        setLaneSession(saved.sharedEvent ? {
-          eventId: saved.sharedEvent.eventId,
-          laneId: saved.sharedEvent.laneId,
-          laneName: saved.sharedEvent.laneName,
-          laneToken: saved.sharedEvent.laneToken,
+        setEvent(preparedSaved);
+        setLaneSession(preparedSaved.sharedEvent ? {
+          eventId: preparedSaved.sharedEvent.eventId,
+          laneId: preparedSaved.sharedEvent.laneId,
+          laneName: preparedSaved.sharedEvent.laneName,
         } : null);
         setBackgroundImageDataUrl(background);
-        const incomingResult = guestResultFromSavedEvent(saved);
+        const incomingResult = guestResultFromSavedEvent(preparedSaved);
         if (incomingResult && incomingResult.at !== lastPresentedAtRef.current) {
           showResult(incomingResult);
         }
         setError("");
         return;
       }
-      const remoteSession = querySession ?? storedSession;
+      let remoteSession = storedSession;
+      if (bootstrapSession) {
+        hasRemoteSession = true;
+        const metadata = await activateSharedLane(bootstrapSession);
+        remoteSession = { ...bootstrapSession, laneName: metadata.laneName };
+        window.history.replaceState(null, "", window.location.pathname);
+      }
       if (remoteSession) {
         hasRemoteSession = true;
         const metadata = await readSharedLane(remoteSession);
-        const preparedSession = { ...remoteSession, laneName: metadata.laneName };
+        const preparedSession: SharedLaneSession = {
+          eventId: remoteSession.eventId,
+          laneId: remoteSession.laneId,
+          laneName: metadata.laneName,
+        };
         window.localStorage.setItem(LANE_SESSION_KEY, JSON.stringify(preparedSession));
         setLaneSession(preparedSession);
         setEvent({
@@ -724,7 +755,7 @@ export default function ScanPage() {
                   {selectedFields.map((field) => (
                     <div className="guest-data-item" key={field}>
                       <span>{labelForField(field)}</span>
-                      <strong>{displayValue(result.attendee as Attendee, field)}</strong>
+                      <strong>{guestDisplayValue(result.attendee!, field)}</strong>
                     </div>
                   ))}
                 </div>

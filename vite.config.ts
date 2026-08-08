@@ -1,7 +1,12 @@
 import vinext from "vinext";
+import { disableTypes } from "image-size";
 import { defineConfig, loadEnv } from "vite";
-import hostingConfig from "./.openai/hosting.json";
-import { sites } from "./build/sites-vite-plugin";
+import hostingConfig from "./.openai/hosting.json" with { type: "json" };
+import { sites } from "./build/sites-vite-plugin.ts";
+
+// image-size 2.0.2 has no patched release for infinite-loop parsers.
+// The application accepts JPG, PNG, and WebP, so disable the affected formats globally.
+disableTypes(["heif", "icns", "jxl", "jxl-stream"]);
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -13,9 +18,14 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 export default defineConfig(async ({ mode }) => {
   const localEnv = loadEnv(mode, process.cwd(), "");
+  const adminPassword = process.env.ADMIN_PASSWORD ?? localEnv.ADMIN_PASSWORD;
+  const adminUsername = process.env.ADMIN_USERNAME ?? localEnv.ADMIN_USERNAME;
+  const adminUsersJson = process.env.ADMIN_USERS_JSON ?? localEnv.ADMIN_USERS_JSON;
+  const sessionSecret = process.env.SESSION_SECRET ?? localEnv.SESSION_SECRET;
   const localBindingConfig = {
     main: "./worker/index.ts",
     compatibility_flags: ["nodejs_compat"],
+    triggers: { crons: ["17 3 * * *"] },
     d1_databases: d1
       ? [
           {
@@ -33,8 +43,22 @@ export default defineConfig(async ({ mode }) => {
           },
         ]
       : [],
-    ...(mode === "development" && localEnv.ADMIN_PASSWORD
-      ? { vars: { ADMIN_PASSWORD: localEnv.ADMIN_PASSWORD } }
+    ratelimits: [
+      { name: "LOGIN_RATE_LIMITER", namespace_id: "41001", simple: { limit: 10, period: 60 as const } },
+      { name: "SCAN_RATE_LIMITER", namespace_id: "41002", simple: { limit: 900, period: 60 as const } },
+      { name: "UNKNOWN_SCAN_RATE_LIMITER", namespace_id: "41003", simple: { limit: 60, period: 60 as const } },
+      { name: "SCAN_IP_RATE_LIMITER", namespace_id: "41004", simple: { limit: 60_000, period: 60 as const } },
+      { name: "UNKNOWN_SCAN_IP_RATE_LIMITER", namespace_id: "41005", simple: { limit: 3_000, period: 60 as const } },
+    ],
+    ...(mode === "development"
+      ? {
+          vars: {
+            ...(adminPassword ? { ADMIN_PASSWORD: adminPassword } : {}),
+            ...(adminUsername ? { ADMIN_USERNAME: adminUsername } : {}),
+            ...(adminUsersJson ? { ADMIN_USERS_JSON: adminUsersJson } : {}),
+            ...(sessionSecret ? { SESSION_SECRET: sessionSecret } : {}),
+          },
+        }
       : {}),
   };
 
@@ -57,6 +81,9 @@ export default defineConfig(async ({ mode }) => {
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         config: localBindingConfig,
+        persistState: process.env.CHECKIN_POD_PERSIST_PATH
+          ? { path: process.env.CHECKIN_POD_PERSIST_PATH }
+          : true,
       }),
     ],
   };

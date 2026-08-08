@@ -3,11 +3,12 @@ import type {
   CheckInMode,
   DisplaySettings,
   LastScan,
+  ProjectionPrivacy,
   ProjectionCue,
   ProjectionCueType,
   SavedEvent,
 } from "./checkin-core.ts";
-import { toAttendees } from "./checkin-core.ts";
+import { minimizeOriginalRow, toAttendees } from "./checkin-core.ts";
 import {
   MAX_SHARED_ATTENDEES,
   MAX_SHARED_LANES,
@@ -30,11 +31,14 @@ export type SharedEventConnection = {
   eventId: string;
   laneId: string;
   laneName: string;
-  laneToken: string;
   cursor: number;
+  /** @deprecated Legacy browser records use this once to exchange an HttpOnly lane session. */
+  laneToken?: string;
 };
 
-export type SharedLaneSession = Pick<SharedEventConnection, "eventId" | "laneId" | "laneName" | "laneToken">;
+export type SharedLaneSession = Pick<SharedEventConnection, "eventId" | "laneId" | "laneName">;
+
+export type SharedLaneBootstrap = SharedLaneSession & { laneToken: string };
 
 export type SharedEventMetadata = {
   eventId: string;
@@ -43,6 +47,7 @@ export type SharedEventMetadata = {
   headers: string[];
   selectedFields: string[];
   backgroundColor: string;
+  projectionPrivacy: ProjectionPrivacy;
   total: number;
   laneName: string;
 };
@@ -58,14 +63,19 @@ export type SharedChange = {
 
 export type SharedScanResult = {
   kind: LastScan["kind"];
-  attendee?: Attendee;
+  attendee?: SharedAttendeeResult;
   code?: string;
   at: string;
   laneName?: string;
   cursor: number;
 };
 
+export type SharedAttendeeResult = Pick<Attendee, "id" | "name" | "checkedInAt"> & {
+  displayValues: Record<string, string>;
+};
+
 export type SharedLane = {
+  eventId: string;
   laneId: string;
   laneName: string;
   laneToken: string;
@@ -89,9 +99,11 @@ export type SharedAdminEventMetadata = {
   headers: string[];
   selectedFields: string[];
   backgroundColor: string;
+  projectionPrivacy: ProjectionPrivacy;
   total: number;
   cursor: number;
   syncMode: CheckInMode;
+  expiresAt: string;
 };
 
 export type SharedEventHistoryItem = {
@@ -104,6 +116,7 @@ export type SharedEventHistoryItem = {
   arrived: number;
   active: boolean;
   syncMode: CheckInMode;
+  expiresAt: string;
 };
 
 export type SingleCheckInChange = Pick<Attendee, "id" | "checkedInAt">;
@@ -170,7 +183,6 @@ export async function importSharedEvent(
     eventId: string;
     laneId: string;
     laneName: string;
-    laneToken: string;
   }>("/api/shared-checkin", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -181,6 +193,8 @@ export async function importSharedEvent(
       headers: event.headers,
       selectedFields: event.displaySettings?.selectedFields ?? [],
       backgroundColor: event.displaySettings?.backgroundColor ?? "#0E0F12",
+      projectionPrivacy: event.displaySettings?.projectionPrivacy ?? "count",
+      retentionDays: 30,
       expectedTotal: event.attendees.length,
       syncMode,
     }),
@@ -196,6 +210,10 @@ export async function importSharedEvent(
         eventId: beginning.eventId,
         attendees: chunk.map((attendee, chunkIndex) => ({
           ...attendee,
+          original: minimizeOriginalRow(
+            attendee.original,
+            event.displaySettings?.selectedFields ?? [],
+          ),
           position: uploaded + chunkIndex,
         })),
       }),
@@ -269,13 +287,24 @@ export async function syncSingleCheckInState(
 }
 
 export async function readSharedLane(session: SharedLaneSession) {
-  const query = new URLSearchParams({
-    mode: "lane",
-    eventId: session.eventId,
-    laneId: session.laneId,
-    token: session.laneToken,
-  });
-  return apiJson<{ event: SharedEventMetadata }>(`/api/shared-checkin?${query}`).then((body) => body.event);
+  return apiJson<{ event: SharedEventMetadata }>("/api/shared-checkin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "lane_heartbeat", eventId: session.eventId, laneId: session.laneId }),
+  }).then((body) => body.event);
+}
+
+export async function activateSharedLane(session: SharedLaneBootstrap) {
+  return apiJson<{ event: SharedEventMetadata }>("/api/shared-checkin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "activate_lane",
+      eventId: session.eventId,
+      laneId: session.laneId,
+      laneToken: session.laneToken,
+    }),
+  }).then((body) => body.event);
 }
 
 export async function scanSharedEvent(
@@ -287,7 +316,14 @@ export async function scanSharedEvent(
   return apiJson<SharedScanResult & JsonResponse>("/api/shared-checkin", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action: "scan", ...session, code, scannedAt, requestId }),
+    body: JSON.stringify({
+      action: "scan",
+      eventId: session.eventId,
+      laneId: session.laneId,
+      code,
+      scannedAt,
+      requestId,
+    }),
   });
 }
 
@@ -400,7 +436,7 @@ export function applySharedScanResult(event: SavedEvent, result: SharedScanResul
 
 function laneUrl(eventId: string, laneId: string, laneToken: string) {
   const query = new URLSearchParams({ event: eventId, lane: laneId, token: laneToken });
-  return `${window.location.origin}/scan?${query}`;
+  return `${window.location.origin}/scan#${query}`;
 }
 
 export async function createSharedLane(eventId: string, laneName: string) {
@@ -409,7 +445,7 @@ export async function createSharedLane(eventId: string, laneName: string) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action: "create_lane", eventId, laneName }),
   });
-  return { ...lane, url: laneUrl(eventId, lane.laneId, lane.laneToken) };
+  return { ...lane, eventId, url: laneUrl(eventId, lane.laneId, lane.laneToken) };
 }
 
 export async function fetchSharedLanes(eventId: string) {
@@ -439,7 +475,7 @@ export async function rotateSharedLane(eventId: string, laneId: string) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action: "rotate_lane", eventId, laneId }),
   });
-  return { ...lane, url: laneUrl(eventId, lane.laneId, lane.laneToken) };
+  return { ...lane, eventId, url: laneUrl(eventId, lane.laneId, lane.laneToken) };
 }
 
 export async function fetchActiveSharedEventSummary(eventId = "") {
@@ -518,6 +554,7 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
       displaySettings: {
         selectedFields: restored.event.selectedFields,
         backgroundColor: restored.event.backgroundColor,
+        projectionPrivacy: restored.event.projectionPrivacy,
       },
       revision: restored.event.cursor,
       checkInMode: "single",
@@ -530,6 +567,7 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
     };
   }
   const lane = await createSharedLane(restored.event.eventId, "復原中控台");
+  await activateSharedLane(lane);
   return {
     version: 1,
     fileName: restored.event.fileName,
@@ -542,6 +580,7 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
     displaySettings: {
       selectedFields: restored.event.selectedFields,
       backgroundColor: restored.event.backgroundColor,
+      projectionPrivacy: restored.event.projectionPrivacy,
     },
     revision: restored.event.cursor,
     checkInMode: "multi",
@@ -549,7 +588,6 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
       eventId: restored.event.eventId,
       laneId: lane.laneId,
       laneName: lane.laneName,
-      laneToken: lane.laneToken,
       cursor: restored.event.cursor,
     },
   };

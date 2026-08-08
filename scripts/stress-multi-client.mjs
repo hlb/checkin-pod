@@ -25,11 +25,11 @@ function argumentsFrom(argv) {
   return values;
 }
 
-async function loadLocalPassword() {
-  if (process.env.ADMIN_PASSWORD) return process.env.ADMIN_PASSWORD;
+async function loadLocalAdminValue(name) {
+  if (process.env[name]) return process.env[name];
   const source = await readFile(new URL("../.env.local", import.meta.url), "utf8").catch(() => "");
   for (const line of source.split(/\r?\n/)) {
-    const match = line.match(/^ADMIN_PASSWORD\s*=\s*(.*)$/);
+    const match = line.match(new RegExp(`^${name}\\s*=\\s*(.*)$`));
     if (!match) continue;
     return match[1].trim().replace(/^(['"])(.*)\1$/, "$2");
   }
@@ -57,7 +57,8 @@ if (!Number.isInteger(options.contentionTickets) || options.contentionTickets < 
   throw new Error("--contention-tickets must be smaller than --attendees");
 }
 
-const password = await loadLocalPassword();
+const username = await loadLocalAdminValue("ADMIN_USERNAME") || "admin";
+const password = await loadLocalAdminValue("ADMIN_PASSWORD");
 if (!password) throw new Error("ADMIN_PASSWORD is required (environment or .env.local)");
 
 let adminCookie = "";
@@ -89,7 +90,10 @@ async function request(path, init = {}, measure = false) {
   const started = performance.now();
   try {
     const response = await fetch(`${options.baseUrl}${path}`, { ...init, signal: controller.signal });
-    const body = await response.json().catch(() => ({}));
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = contentType.includes("application/json")
+      ? await response.json().catch(() => ({}))
+      : { text: await response.text() };
     return { response, body, duration: performance.now() - started };
   } finally {
     clearTimeout(timeout);
@@ -102,6 +106,19 @@ async function post(body, cookie = adminCookie, measure = false) {
     headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
   }, measure);
+}
+
+function responseCookie(response) {
+  return response.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+}
+
+async function activateLane(laneId, laneName, laneToken) {
+  const activated = await post({ action: "activate_lane", eventId, laneId, laneToken }, "");
+  const cookie = responseCookie(activated.response);
+  if (!activated.response.ok || !cookie) {
+    throw new Error(`lane activation failed (${activated.response.status})`);
+  }
+  return { laneId, laneName, cookie };
 }
 
 async function readCompleteRoster(requestedEventId) {
@@ -154,7 +171,6 @@ function scanBody(lane, code, requestId) {
     action: "scan",
     eventId,
     laneId: lane.laneId,
-    laneToken: lane.laneToken,
     code,
     requestId,
   };
@@ -180,7 +196,7 @@ async function writeReport(status) {
 | 指標 | 結果 |
 |---|---:|
 | 名單匯入時間 | ${formatNumber(importMs / 1000, 2)} 秒 |
-| 50 工作站建立與驗證 | ${formatNumber(laneSetupMs / 1000, 2)} 秒 |
+| ${options.clients} 工作站建立與驗證 | ${formatNumber(laneSetupMs / 1000, 2)} 秒 |
 | 掃描階段時間 | ${formatNumber(scanWallMs / 1000, 2)} 秒 |
 | 掃描 API 請求 | ${totalRequests.toLocaleString()} |
 | 平均吞吐量 | ${formatNumber(throughput, 2)} req/s |
@@ -220,7 +236,7 @@ ${checks.map((item) => `- ${item.passed ? "✅" : "❌"} ${item.name}：${item.d
 npm run stress
 \`\`\`
 
-腳本會建立獨立測試活動、完成驗證、輸出本報告，最後刪除該測試活動。密碼只從 \`ADMIN_PASSWORD\` 或本機 \`.env.local\` 讀取，不會寫入報告。
+腳本會建立獨立測試活動、使用 HttpOnly lane session 完成驗證、輸出本報告，最後刪除該測試活動。管理帳號與密碼只從環境或本機 \`.env.local\` 讀取，不會寫入報告。
 `;
   const reportUrl = new URL(`../${options.report}`, import.meta.url);
   await mkdir(new URL("./", reportUrl), { recursive: true });
@@ -232,11 +248,14 @@ try {
   const login = await request("/admin-auth", {
     method: "POST",
     redirect: "manual",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ password }),
+    headers: { "content-type": "application/x-www-form-urlencoded", origin: options.baseUrl },
+    body: new URLSearchParams({ username, password }),
   });
-  adminCookie = login.response.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
-  if (login.response.status !== 303 || !adminCookie) throw new Error(`admin login failed (${login.response.status})`);
+  adminCookie = responseCookie(login.response);
+  if (login.response.status !== 303 || !adminCookie) {
+    const message = login.body.text?.match(/<p class="error"[^>]*>([^<]+)<\/p>/)?.[1] ?? "";
+    throw new Error(`admin login failed (${login.response.status}${message ? `: ${message}` : ""})`);
+  }
 
   const capacity = await post({
     action: "begin_import",
@@ -262,9 +281,10 @@ try {
   eventId = beginning.body.eventId;
   const lanes = [{
     laneId: beginning.body.laneId,
-    laneToken: beginning.body.laneToken,
     laneName: beginning.body.laneName,
+    cookie: responseCookie(beginning.response),
   }];
+  if (!lanes[0].cookie) throw new Error("begin import did not issue the primary lane cookie");
   for (let offset = 0; offset < options.attendees; offset += 200) {
     const items = Array.from({ length: Math.min(200, options.attendees - offset) }, (_, index) => attendee(offset + index));
     const uploaded = await post({ action: "upload_chunk", eventId, attendees: items });
@@ -282,15 +302,16 @@ try {
     if (!created.response.ok) throw new Error(`lane creation failed (${created.response.status})`);
     return created.body;
   }));
-  lanes.push(...extraLanes);
+  lanes.push(...await Promise.all(extraLanes.map((lane) =>
+    activateLane(lane.laneId, lane.laneName, lane.laneToken))));
   const laneReads = await Promise.all(lanes.map((lane) => request(`/api/shared-checkin?${new URLSearchParams({
-    mode: "lane", eventId, laneId: lane.laneId, token: lane.laneToken,
-  })}`)));
-  check("50 台工作站各自取得活動資訊", laneReads.every((result) => result.response.ok && result.body.event?.total === options.attendees),
+    mode: "lane", eventId, laneId: lane.laneId,
+  })}`, { headers: { cookie: lane.cookie } })));
+  check(`${options.clients} 台工作站各自取得活動資訊`, laneReads.every((result) => result.response.ok && result.body.event?.total === options.attendees),
     `${laneReads.filter((result) => result.response.ok).length}/${options.clients} 成功`);
-  const wrongToken = await request(`/api/shared-checkin?${new URLSearchParams({
-    mode: "lane", eventId, laneId: lanes[0].laneId, token: "wrong-token",
-  })}`);
+  const wrongToken = await post({
+    action: "activate_lane", eventId, laneId: lanes[0].laneId, laneToken: "wrong-token",
+  }, "");
   check("錯誤工作站 token 被拒絕", wrongToken.response.status === 401, `HTTP ${wrongToken.response.status}`);
 
   const initialLaneList = await request(`/api/shared-checkin?${new URLSearchParams({ mode: "lanes", eventId })}`, {
@@ -304,27 +325,33 @@ try {
   check("工作站可重新命名", renamed.response.ok && renamed.body.laneName === "重新命名入口", `HTTP ${renamed.response.status}`);
 
   const rotatedLane = lanes[Math.min(2, lanes.length - 1)];
-  const oldRotatedToken = rotatedLane.laneToken;
+  const oldRotatedCookie = rotatedLane.cookie;
   const rotated = await post({ action: "rotate_lane", eventId, laneId: rotatedLane.laneId });
-  if (rotated.response.ok) rotatedLane.laneToken = rotated.body.laneToken;
   const oldRotatedAccess = await request(`/api/shared-checkin?${new URLSearchParams({
-    mode: "lane", eventId, laneId: rotatedLane.laneId, token: oldRotatedToken,
-  })}`);
+    mode: "lane", eventId, laneId: rotatedLane.laneId,
+  })}`, { headers: { cookie: oldRotatedCookie } });
+  if (rotated.response.ok) {
+    const reactivated = await activateLane(rotatedLane.laneId, rotatedLane.laneName, rotated.body.laneToken);
+    rotatedLane.cookie = reactivated.cookie;
+  }
   check("換發工作站連結會立即撤銷舊 token", rotated.response.ok && oldRotatedAccess.response.status === 401,
     `rotate HTTP ${rotated.response.status} · old token HTTP ${oldRotatedAccess.response.status}`);
 
   const restartedLane = lanes.at(-1);
   const revoked = await post({ action: "revoke_lane", eventId, laneId: restartedLane.laneId });
   const revokedAccess = await request(`/api/shared-checkin?${new URLSearchParams({
-    mode: "lane", eventId, laneId: restartedLane.laneId, token: restartedLane.laneToken,
-  })}`);
+    mode: "lane", eventId, laneId: restartedLane.laneId,
+  })}`, { headers: { cookie: restartedLane.cookie } });
   check("停用工作站會立即拒絕掃描連線", revoked.response.ok && revokedAccess.response.status === 401,
     `revoke HTTP ${revoked.response.status} · lane HTTP ${revokedAccess.response.status}`);
   const restarted = await post({ action: "rotate_lane", eventId, laneId: restartedLane.laneId });
-  if (restarted.response.ok) restartedLane.laneToken = restarted.body.laneToken;
+  if (restarted.response.ok) {
+    const reactivated = await activateLane(restartedLane.laneId, restartedLane.laneName, restarted.body.laneToken);
+    restartedLane.cookie = reactivated.cookie;
+  }
   const restartedAccess = await request(`/api/shared-checkin?${new URLSearchParams({
-    mode: "lane", eventId, laneId: restartedLane.laneId, token: restartedLane.laneToken,
-  })}`);
+    mode: "lane", eventId, laneId: restartedLane.laneId,
+  })}`, { headers: { cookie: restartedLane.cookie } });
   check("停用工作站可換發連結後重新啟用", restarted.response.ok && restartedAccess.response.ok,
     `rotate HTTP ${restarted.response.status} · lane HTTP ${restartedAccess.response.status}`);
 
@@ -340,7 +367,7 @@ try {
   console.log(`[stress] scanning ${normalCount.toLocaleString()} unique tickets with ${options.clients} concurrent clients`);
   const scanStarted = performance.now();
   const idempotentResults = await Promise.all(Array.from({ length: 3 }, () =>
-    post(scanBody(lanes[0], "STRESS-QR-00000", "idempotent-retry-0"), "", true)));
+    post(scanBody(lanes[0], "STRESS-QR-00000", "idempotent-retry-0"), lanes[0].cookie, true)));
   for (const result of idempotentResults) {
     const kind = result.response.ok ? result.body.kind : "failed";
     if (kind in resultCounts) resultCounts[kind] += 1;
@@ -349,11 +376,17 @@ try {
   check("同一請求重送只保留同一個成功結果", idempotentResults.every((result) =>
     result.response.ok && result.body.kind === "success" && result.body.cursor === idempotentResults[0].body.cursor),
   `${idempotentResults.filter((result) => result.body.kind === "success").length}/3 success · cursor ${idempotentResults[0].body.cursor ?? "n/a"}`);
+  const laneAttendee = idempotentResults[0].body.attendee ?? {};
+  check("工作站掃描回應只包含最小欄位與顯示 allowlist",
+    !Object.hasOwn(laneAttendee, "email") && !Object.hasOwn(laneAttendee, "phone")
+      && !Object.hasOwn(laneAttendee, "approvalStatus") && !Object.hasOwn(laneAttendee, "original")
+      && typeof laneAttendee.displayValues === "object",
+    `fields: ${Object.keys(laneAttendee).sort().join(", ")}`);
   await Promise.all(lanes.map(async (lane, clientIndex) => {
     for (let index = clientIndex; index < normalCount; index += options.clients) {
       if (index === 0) continue;
       const serial = String(index).padStart(5, "0");
-      const result = await post(scanBody(lane, `STRESS-QR-${serial}`, `unique-${clientIndex}-${index}`), "", true);
+      const result = await post(scanBody(lane, `STRESS-QR-${serial}`, `unique-${clientIndex}-${index}`), lane.cookie, true);
       const kind = result.response.ok ? result.body.kind : "failed";
       if (kind in resultCounts) resultCounts[kind] += 1;
       else resultCounts.failed += 1;
@@ -369,7 +402,7 @@ try {
     const index = normalCount + offset;
     const serial = String(index).padStart(5, "0");
     const results = await Promise.all(lanes.map((lane, clientIndex) =>
-      post(scanBody(lane, `STRESS-QR-${serial}`, `race-${offset}-${clientIndex}`), "", true)));
+      post(scanBody(lane, `STRESS-QR-${serial}`, `race-${offset}-${clientIndex}`), lane.cookie, true)));
     const outcomes = results.map((result) => result.response.ok ? result.body.kind : "failed");
     contentionOutcomes.push(outcomes);
     for (const kind of outcomes) {
@@ -379,7 +412,7 @@ try {
   }
 
   const unknowns = await Promise.all(lanes.map((lane, clientIndex) =>
-    post(scanBody(lane, `UNKNOWN-${clientIndex}`, `unknown-${clientIndex}`), "", true)));
+    post(scanBody(lane, `UNKNOWN-${clientIndex}`, `unknown-${clientIndex}`), lane.cookie, true)));
   for (const result of unknowns) {
     const kind = result.response.ok ? result.body.kind : "failed";
     if (kind in resultCounts) resultCounts[kind] += 1;
@@ -436,7 +469,9 @@ try {
   errors.push(error instanceof Error ? error.stack ?? error.message : String(error));
 } finally {
   if (eventId && adminCookie) {
-    const removed = await post({ action: "delete_event", eventId }).catch(() => null);
+    const removed = await post({
+      action: "delete_event", eventId, confirmation: `永久刪除活動 ${eventId}`,
+    }).catch(() => null);
     cleanupSucceeded = Boolean(removed?.response.ok);
   }
   check("測試活動已清除", cleanupSucceeded, cleanupSucceeded ? "cleanup complete" : "cleanup failed");

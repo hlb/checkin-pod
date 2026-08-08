@@ -327,11 +327,7 @@ export default function ProjectionPage() {
           const sharedEvent = body.event ?? null;
           if (!sharedEvent) {
             sharedCursorRef.current = null;
-            const legacyResponse = await fetch("/api/live-event", { cache: "no-store" });
-            const legacyBody = legacyResponse.ok
-              ? await legacyResponse.json() as { snapshot?: LiveEventSnapshot | null }
-              : { snapshot: null };
-            applySnapshot(legacyBody.snapshot ?? null);
+            applySnapshot(null);
           } else if (sharedEvent.attendees) {
             sharedCursorRef.current = sharedEvent.cursor;
             applySnapshot({

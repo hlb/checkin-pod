@@ -15,6 +15,15 @@ export function isEventDeletionConfirmed(eventId: string, confirmation: string) 
   return confirmation === eventDeletionConfirmation(eventId);
 }
 
+export function publicProjectionName(name: string | null, privacy: ProjectionPrivacy) {
+  if (privacy === "count") return "來賓";
+  const characters = [...(name?.trim() ?? "")];
+  if (privacy === "names") return characters.join("") || "來賓";
+  if (characters.length <= 1) return "來賓";
+  if (characters.length === 2) return `${characters[0]}○`;
+  return `${characters[0]}${"○".repeat(Math.min(2, characters.length - 2))}${characters.at(-1)}`;
+}
+
 export function chunkItems<T>(items: T[], size = SHARED_IMPORT_CHUNK_SIZE) {
   if (!Number.isInteger(size) || size < 1) throw new Error("chunk size must be a positive integer");
   const chunks: T[][] = [];
@@ -27,3 +36,4 @@ export function assertSharedCapacity(count: number) {
     throw new Error(`活動需要 1 到 ${MAX_SHARED_ATTENDEES.toLocaleString()} 位可報到來賓。`);
   }
 }
+import type { ProjectionPrivacy } from "./checkin-core.ts";

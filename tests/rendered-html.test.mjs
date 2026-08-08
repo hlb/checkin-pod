@@ -9,10 +9,16 @@ async function render(path = "/", init = {}, envOverrides = {}) {
   return worker.fetch(
     new Request(`http://localhost${path}`, {
       ...init,
-      headers: { accept: "text/html", ...init.headers },
+      headers: {
+        accept: "text/html",
+        ...(init.method === "POST" ? { origin: "http://localhost" } : {}),
+        ...init.headers,
+      },
     }),
     {
       ADMIN_PASSWORD: "test-password",
+      ADMIN_USERNAME: "test-admin",
+      SESSION_SECRET: "test-session-secret-with-at-least-32-characters",
       ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
       ...envOverrides,
     },
@@ -24,7 +30,7 @@ async function adminCookie() {
   const response = await render("/admin-auth", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ password: "test-password" }),
+    body: new URLSearchParams({ username: "test-admin", password: "test-password" }),
   });
   assert.equal(response.status, 303);
   return response.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
@@ -69,14 +75,14 @@ test("password-protects the control center while keeping displays public", async
     render("/projection"),
   ]);
   assert.equal(lockedAdmin.status, 200);
-  assert.match(await lockedAdmin.text(), /工作人員密碼/);
+  assert.match(await lockedAdmin.text(), /管理員密碼/);
   assert.equal(scanResponse.status, 200);
   assert.equal(projectionResponse.status, 200);
 
   const wrongPassword = await render("/admin-auth", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ password: "wrong-password" }),
+    body: new URLSearchParams({ username: "test-admin", password: "wrong-password" }),
   });
   assert.equal(wrongPassword.status, 401);
   assert.match(await wrongPassword.text(), /密碼不正確/);
@@ -84,16 +90,14 @@ test("password-protects the control center while keeping displays public", async
 
 test("logging out ends the public projection without deleting browser records", async () => {
   const cookie = await adminCookie();
-  let deletedLiveEventId = null;
   let disabledSharedProjection = false;
   const database = {
     prepare(sql) {
-      const isLegacyDelete = /DELETE FROM live_event_state/.test(sql);
       const isSharedDisable = /UPDATE checkin_events SET active = 0/.test(sql);
-      assert.ok(isLegacyDelete || isSharedDisable, `unexpected logout SQL: ${sql}`);
+      const isAudit = /checkin_admin_audit/.test(sql);
+      assert.ok(isSharedDisable || isAudit, `unexpected logout SQL: ${sql}`);
       return {
-        bind(value) {
-          if (isLegacyDelete) deletedLiveEventId = value;
+        bind() {
           if (isSharedDisable) disabledSharedProjection = true;
           return this;
         },
@@ -112,7 +116,6 @@ test("logging out ends the public projection without deleting browser records", 
   assert.equal(response.status, 303);
   assert.equal(response.headers.get("location"), "/admin");
   assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);
-  assert.equal(deletedLiveEventId, 1);
   assert.equal(disabledSharedProjection, true);
 });
 
@@ -129,20 +132,42 @@ test("an unauthenticated logout request cannot clear the public projection", asy
   assert.match(response.headers.get("set-cookie") ?? "", /Max-Age=0/);
 });
 
+test("logout only accepts same-origin POST requests", async () => {
+  const getResponse = await render("/admin-auth/logout");
+  assert.equal(getResponse.status, 405);
+  assert.equal(getResponse.headers.get("allow"), "POST");
+  const crossOriginResponse = await render("/admin-auth/logout", {
+    method: "POST",
+    headers: { origin: "https://attacker.example" },
+  });
+  assert.equal(crossOriginResponse.status, 403);
+});
+
+test("adds browser security headers to public and administrative routes", async () => {
+  const response = await render("/projection");
+  assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.match(response.headers.get("permissions-policy") ?? "", /camera=\(self\)/);
+});
+
 test("wires persistence, scanner, secured projection sync, and event controls", async () => {
-  const [page, scanPage, projectionPage, planetVariants, liveRoute, sharedRoute, sharedSql, policy, core, auth, styles, workerSource, sampleZip, largeSampleZip, successAudio, failureAudio] = await Promise.all([
+  const [page, scanPage, projectionPage, planetVariants, sharedRoute, sharedSql, sharedClient, core, auth, laneAuth, styles, workerSource, viteConfig, stressScript, sampleZip, largeSampleZip, successAudio, failureAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/projection/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/planet-variants.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/api/live-event/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/shared-checkin/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/shared-checkin-sql.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/live-event-policy.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/shared-checkin.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/checkin-core.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/admin-auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lane-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/stress-multi-client.mjs", import.meta.url), "utf8"),
     readFile(new URL("../public/checkin-pod-sample-150.zip", import.meta.url)),
     readFile(new URL("../public/checkin-pod-sample-10000.zip", import.meta.url)),
     readFile(new URL("../public/audio/checkin-success.mp3", import.meta.url)),
@@ -150,6 +175,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   ]);
 
   assert.match(page, /MAX_ATTENDEES = MAX_SHARED_ATTENDEES/);
+  assert.match(page, /MAX_CSV_FILE_SIZE = 50 \* 1024 \* 1024/);
   assert.match(page, /GUESTS_PER_PAGE = 100/);
   assert.match(page, /新增報到工作站/);
   assert.match(page, /checkin-pod-sample-150\.zip/);
@@ -182,7 +208,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(core, /navigator\.locks/);
   assert.match(core, /applyScanToEvent/);
   assert.match(core, /ASSET_STORE_NAME/);
-  assert.match(core, /x-event-writer-token/);
+  assert.doesNotMatch(core + page + projectionPage, /\/api\/live-event|x-event-writer-token/);
   assert.match(page, /writeBackgroundImageDataUrl/);
   assert.match(scanPage, /readBackgroundImageDataUrl/);
   assert.match(scanPage, /BarcodeDetector/);
@@ -212,8 +238,6 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(planetVariants, /PLANET_PALETTES/);
   assert.match(planetVariants, /PLANET_TYPES/);
   assert.match(planetVariants, /combinationIndex/);
-  assert.match(liveRoute, /hasValidAdminSession/);
-  assert.match(liveRoute, /isLiveEventWriterAuthorized/);
   assert.match(sharedRoute, /hasValidAdminSession/);
   assert.match(sharedRoute, /sha256Hex\(laneToken\)/);
   assert.match(sharedRoute, /SHARED_CHANGE_PAGE_SIZE \+ 1/);
@@ -226,6 +250,25 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(sharedRoute, /deactivate_event/);
   assert.match(sharedRoute, /deletion_confirmation_mismatch/);
   assert.match(sharedRoute, /isEventDeletionConfirmed/);
+  assert.match(sharedRoute, /laneAttendeeFromRow/);
+  assert.match(sharedRoute, /publicProjectionName/);
+  assert.match(sharedRoute, /projection_privacy/);
+  assert.match(sharedRoute, /purgeExpiredEvents/);
+  assert.match(sharedRoute, /readLimitedText\(request, 4_000_000\)/);
+  assert.match(sharedRoute, /utf8ByteLength\(originalJson\)/);
+  assert.match(sharedClient, /minimizeOriginalRow/);
+  const laneResultBuilder = sharedRoute.slice(
+    sharedRoute.indexOf("function laneAttendeeFromRow"),
+    sharedRoute.indexOf("async function scanResponse"),
+  );
+  assert.doesNotMatch(laneResultBuilder, /email:|phone:|approvalStatus:/);
+  const scanClient = sharedClient.slice(
+    sharedClient.indexOf("export async function scanSharedEvent("),
+    sharedClient.indexOf("export async function scanSharedEventWithRetry"),
+  );
+  assert.doesNotMatch(scanClient, /laneToken/);
+  assert.match(laneAuth, /HttpOnly/);
+  assert.match(laneAuth, /SameSite=Strict/);
   assert.match(sharedSql, /checked_in_at IS NULL/);
   assert.match(sharedSql, /CHECK\(total >= 0 AND total <= 10000\)/);
   assert.match(sharedSql, /event_name/);
@@ -234,16 +277,32 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
     sharedRoute.indexOf("async function handleProjectionGet"),
   );
   assert.doesNotMatch(changesHandler, /SET active/);
-  assert.match(policy, /input\.total > 200/);
-  assert.match(policy, /isStaleLiveEventSnapshot/);
   assert.match(auth, /HttpOnly/);
   assert.match(auth, /SameSite=Strict/);
-  assert.match(auth, /ADMIN_COOKIE_NAME = "checkin_pod_admin_session"/);
-  assert.match(auth, /ADMIN_COOKIE_SALT = "checkin-pod-admin-v1"/);
-  assert.match(auth, /LEGACY_ADMIN_COOKIE_NAME/);
+  assert.match(auth, /SESSION_MAX_AGE_SECONDS/);
+  assert.match(auth, /HMAC/);
+  assert.match(auth, /__Host-checkin_pod_admin_session/);
   assert.match(workerSource, /ADMIN_PASSWORD/);
+  assert.match(workerSource, /ADMIN_USERS_JSON/);
   assert.match(workerSource, /href="\/benchmark"/);
-  assert.match(workerSource, /clearPublishedLiveEvent/);
+  assert.match(workerSource, /Content-Security-Policy/i);
+  assert.match(workerSource, /readLimitedText\(request, 4_096\)/);
+  assert.match(workerSource, /deactivateSharedProjection/);
+  assert.match(workerSource, /scheduled\(/);
+  assert.doesNotMatch(workerSource, /live_event_state/);
+  assert.match(viteConfig, /LOGIN_RATE_LIMITER/);
+  assert.match(viteConfig, /UNKNOWN_SCAN_RATE_LIMITER/);
+  assert.match(viteConfig, /SCAN_IP_RATE_LIMITER/);
+  assert.match(viteConfig, /UNKNOWN_SCAN_IP_RATE_LIMITER/);
+  assert.match(viteConfig, /disableTypes/);
+  const stressScanBody = stressScript.slice(
+    stressScript.indexOf("function scanBody"),
+    stressScript.indexOf("async function writeReport"),
+  );
+  assert.doesNotMatch(stressScanBody, /laneToken/);
+  assert.doesNotMatch(stressScript, /mode: "lane"[^}]*token:/s);
+  assert.match(stressScript, /activate_lane/);
+  assert.match(stressScript, /responseCookie/);
   assert.doesNotMatch(workerSource + auth, /llap55688/);
   assert.match(styles, /\.guest-screen\.has-custom-background\s*\{[^}]*background-size:\s*contain/s);
   assert.match(styles, /\.guest-scan-content\.has-camera/);

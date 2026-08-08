@@ -511,6 +511,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .field-picker-grid label:hover { background: #f2f3ed; }
 .field-picker-grid input { accent-color: var(--forest); }
 .field-picker-grid label span { overflow: hidden; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.projection-privacy-setting { padding-top: 20px; grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-top: 1px solid var(--line); }
+.projection-privacy-setting > div { display: flex; flex-direction: column; gap: 5px; }
+.projection-privacy-setting strong { font-size: 12px; }
+.projection-privacy-setting span { color: var(--muted); font-size: 10px; }
+.projection-privacy-setting select { min-width: 150px; min-height: 38px; padding: 0 34px 0 11px; color: #35483b; background: #f3f4f0; border: 1px solid #d9ddd5; border-radius: 8px; font-size: 10px; font-weight: 800; }
 .background-settings { padding-top: 21px; grid-column: 1 / -1; display: grid; grid-template-columns: 150px 1fr auto; align-items: center; gap: 18px; border-top: 1px solid var(--line); }
 .background-preview { width: 150px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; color: #c6d4ca; background-color: var(--forest); background-position: center; background-size: cover; border-radius: 10px 10px 10px 4px; font-size: 10px; font-weight: 800; }
 .background-preview.has-image { box-shadow: inset 0 0 0 1px rgba(23,59,42,.12); }
@@ -956,6 +961,8 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .live-panel-actions { align-items: flex-start; flex-direction: column; }
   .display-settings-section { width: min(100% - 32px, 1180px); padding: 22px; grid-template-columns: 1fr; }
   .selected-field-summary, .field-picker { grid-column: 1; grid-row: auto; }
+  .projection-privacy-setting { align-items: flex-start; flex-direction: column; }
+  .projection-privacy-setting select { width: 100%; }
   .background-settings { grid-template-columns: 105px 1fr; }
   .background-preview { width: 105px; }
   .background-settings-actions { grid-column: 1 / -1; }

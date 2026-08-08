@@ -1,0 +1,28 @@
+flowchart TB
+    EVENT["🗓️ checkin_events<br/>PK event_id<br/>privacy · expiresAt · mode · cue"]
+    ATTENDEE["👤 checkin_attendees<br/>PK event_id + attendee_id<br/>必要 PII · checkedInAt · allowlisted JSON"]
+    KEY["checkin_scan_keys<br/>PK event_id + key_hash<br/>attendee_id"]
+    LANE["checkin_lanes<br/>PK lane_id<br/>event_id · token_hash · revokedAt"]
+    ACTIVITY["checkin_activity<br/>PK auto id<br/>event_id · attendee_id · lane_id<br/>outcome · request_id"]
+    AUDIT["📝 checkin_admin_audit<br/>PK auto id<br/>actor · action · source hash"]
+
+    EVENT -->|"1 : many<br/>ON DELETE CASCADE"| ATTENDEE
+    EVENT -->|"1 : many<br/>ON DELETE CASCADE"| KEY
+    EVENT -->|"1 : many<br/>ON DELETE CASCADE"| LANE
+    EVENT -->|"1 : many<br/>ON DELETE CASCADE"| ACTIVITY
+    KEY -->|"composite foreign key"| ATTENDEE
+    ACTIVITY -->|"composite foreign key"| ATTENDEE
+    ACTIVITY -->|"composite foreign key"| LANE
+    AUDIT -. "event_id reference<br/>保留刪除稽核" .-> EVENT
+
+    classDef core fill:#E8F8EE,stroke:#176B3A,stroke-width:2px,color:#092617
+    classDef pii fill:#FFF0F4,stroke:#9A2A50,stroke-width:2px,color:#350D1B
+    classDef secret fill:#F3E8FF,stroke:#68419B,stroke-width:2px,color:#241238
+    classDef log fill:#E8F2FF,stroke:#0B4F8A,stroke-width:2px,color:#071E33
+    classDef audit fill:#FFF3D6,stroke:#7A4B00,stroke-width:2px,color:#251700
+
+    class EVENT core
+    class ATTENDEE pii
+    class KEY,LANE secret
+    class ACTIVITY log
+    class AUDIT audit

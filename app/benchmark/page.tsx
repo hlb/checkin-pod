@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import Link from "next/link";
 import styles from "./benchmark.module.css";
 
 const pageTitle = "Checkin Pod 效能實測｜10,000 人 × 50 個入口";
@@ -114,7 +115,7 @@ export default function BenchmarkPage() {
           <a href="#organizer">主辦單位重點</a>
           <a href="#results">實測數字</a>
           <a href="#method">測試方式</a>
-          <a className={styles.navCta} href="/">進入中控台</a>
+          <Link className={styles.navCta} href="/">進入中控台</Link>
         </nav>
       </header>
 
@@ -284,7 +285,7 @@ export default function BenchmarkPage() {
         <nav aria-label="公開頁面">
           <a href="/scan">來賓畫面</a>
           <a href="/projection">投影畫面</a>
-          <a href="/">中控台登入</a>
+          <Link href="/">中控台登入</Link>
         </nav>
       </footer>
     </main>

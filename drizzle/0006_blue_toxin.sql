@@ -1,0 +1,1 @@
+DROP TABLE `live_event_state`;

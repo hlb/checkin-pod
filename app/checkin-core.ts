@@ -20,11 +20,14 @@ export type LastScan = {
   at: string;
 };
 
+export type ProjectionPrivacy = "count" | "masked" | "names";
+
 export type DisplaySettings = {
   selectedFields: string[];
   /** @deprecated Background images are stored separately in IndexedDB. */
   backgroundImageDataUrl?: string;
   backgroundColor?: string;
+  projectionPrivacy?: ProjectionPrivacy;
 };
 
 export type CheckInMode = "single" | "multi";
@@ -48,7 +51,6 @@ export type SavedEvent = {
   displaySettings?: DisplaySettings;
   lastScan?: LastScan;
   revision?: number;
-  writerToken?: string;
   checkInMode?: CheckInMode;
   singleSync?: SingleSyncState;
   sharedEvent?: import("./shared-checkin").SharedEventConnection;
@@ -132,6 +134,21 @@ export function normalizeHeader(value: string) {
     .toLowerCase()
     .replace(/[\s\-/]+/g, "_")
     .replace(/[()]/g, "");
+}
+
+const SERVER_OPERATIONAL_FIELDS = new Set(
+  Object.values(FIELD_ALIASES).flat().map((field) => normalizeHeader(field)),
+);
+
+/** Keep only fields required for check-in or explicitly selected for staff display. */
+export function minimizeOriginalRow(original: OriginalRow, selectedFields: string[]) {
+  const selected = new Set(selectedFields.map((field) => normalizeHeader(field)));
+  return Object.fromEntries(
+    Object.entries(original).filter(([field]) => {
+      const normalized = normalizeHeader(field);
+      return SERVER_OPERATIONAL_FIELDS.has(normalized) || selected.has(normalized);
+    }),
+  );
 }
 
 export function parseCsv(source: string): { headers: string[]; rows: OriginalRow[] } {
@@ -473,38 +490,14 @@ export async function replaceSavedEvent(event: SavedEvent) {
   const prepared = {
     ...event,
     revision: Math.max(1, event.revision ?? 0),
-    writerToken: event.writerToken || crypto.randomUUID(),
   };
   await withEventWriteLock(() => writeSavedEvent(prepared));
   broadcastEventChange();
-  const projectionSync = event.sharedEvent || event.checkInMode === "single"
-    ? Promise.resolve(true)
-    : publishLiveEvent(prepared).then(() => true, () => false);
-  return { event: prepared, projectionSync };
-}
-
-export async function ensureSavedEventWriterToken() {
-  const prepared = await withEventWriteLock(async () => {
-    const current = await readSavedEvent();
-    if (!current) return null;
-    if (current.writerToken) return current;
-    const next = {
-      ...current,
-      revision: (current.revision ?? 0) + 1,
-      writerToken: crypto.randomUUID(),
-    };
-    await writeSavedEvent(next);
-    return next;
-  });
-  if (!prepared) return null;
-  broadcastEventChange();
-  await publishLiveEvent(prepared);
-  return prepared;
+  return { event: prepared, projectionSync: Promise.resolve(true) };
 }
 
 export async function mutateSavedEvent(
   mutate: (event: SavedEvent) => SavedEvent,
-  publish = false,
 ) {
   const updated = await withEventWriteLock(async () => {
     const current = await readSavedEvent();
@@ -515,7 +508,6 @@ export async function mutateSavedEvent(
     return normalized;
   });
   broadcastEventChange();
-  if (publish) await publishLiveEvent(updated);
   return updated;
 }
 
@@ -528,10 +520,7 @@ export async function commitScan(rawCode: string, scannedAt = new Date().toISOSt
     return next;
   });
   broadcastEventChange();
-  const projectionSync = committed.event.checkInMode === "single"
-    ? Promise.resolve(true)
-    : publishLiveEvent(committed.event).then(() => true, () => false);
-  return { ...committed, projectionSync };
+  return { ...committed, projectionSync: Promise.resolve(true) };
 }
 
 export async function commitAttendeeCheckIn(attendeeId: string, checkedInAt: string | null) {
@@ -555,10 +544,7 @@ export async function commitAttendeeCheckIn(attendeeId: string, checkedInAt: str
     return { event: next, attendee: updatedAttendee };
   });
   broadcastEventChange();
-  const projectionSync = committed.event.checkInMode === "single"
-    ? Promise.resolve(true)
-    : publishLiveEvent(committed.event).then(() => true, () => false);
-  return { ...committed, projectionSync };
+  return { ...committed, projectionSync: Promise.resolve(true) };
 }
 
 export function broadcastEventChange() {
@@ -566,46 +552,6 @@ export function broadcastEventChange() {
   const channel = new BroadcastChannel(CHANNEL_NAME);
   channel.postMessage({ type: "event-changed", at: Date.now() });
   channel.close();
-}
-
-export function liveSnapshotFromEvent(event: SavedEvent): LiveEventSnapshot {
-  return {
-    eventId: event.importedAt,
-    fileName: event.fileName,
-    total: event.attendees.length,
-    revision: event.revision ?? 0,
-    updatedAt: new Date().toISOString(),
-    attendees: event.attendees
-      .filter((attendee) => attendee.checkedInAt)
-      .map(({ id, name, checkedInAt }) => ({ id, name, checkedInAt })),
-  };
-}
-
-export async function publishLiveEvent(event: SavedEvent) {
-  const response = await fetch("/api/live-event", {
-    method: "PUT",
-    headers: {
-      "content-type": "application/json",
-      ...(event.writerToken ? { "x-event-writer-token": event.writerToken } : {}),
-    },
-    body: JSON.stringify(liveSnapshotFromEvent(event)),
-  });
-  if (!response.ok) throw new Error("無法同步投影牆資料。");
-}
-
-export async function clearLiveEvent() {
-  const response = await fetch("/api/live-event", { method: "DELETE" });
-  if (!response.ok) throw new Error("無法清除投影牆資料。");
-}
-
-export async function publishProjectionCue(type: ProjectionCueType) {
-  const response = await fetch("/api/live-event", {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type }),
-  });
-  if (!response.ok) throw new Error("活動資料尚未同步，請重新整理管理頁後再試一次。");
-  return (await response.json()) as { cue: ProjectionCue };
 }
 
 export function defaultDisplayFields(headers: string[]) {
@@ -640,7 +586,10 @@ export function labelForField(field: string) {
 }
 
 export function csvEscape(value: string) {
-  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  const spreadsheetSafe = /^(?:[\t\r\n]|\s*[=+\-@])/.test(value) ? `'${value}` : value;
+  return /[",\r\n]/.test(spreadsheetSafe)
+    ? `"${spreadsheetSafe.replace(/"/g, '""')}"`
+    : spreadsheetSafe;
 }
 
 export function formatTime(value: string | null, includeDate = false) {

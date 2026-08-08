@@ -1,0 +1,50 @@
+flowchart LR
+    ADMIN["👤 活動管理員<br/>中控台"]
+    LANE["🎫 報到工作站<br/>USB 掃描器 / 相機"]
+    AUDIENCE["📊 投影觀眾<br/>公開畫面"]
+    OPS["⚙️ 維運者<br/>部署與 secrets"]
+
+    subgraph BROWSER["Browser runtime"]
+        ADMIN_UI["/ 與 /admin<br/>管理 UI"]
+        SCAN_UI["/scan<br/>報到 UI"]
+        PROJECTION_UI["/projection<br/>投影 UI"]
+        IDB["💾 IndexedDB<br/>單機名單與狀態"]
+        LOCAL["📦 Local Storage<br/>工作站識別與待送佇列"]
+        COOKIES["🔐 HttpOnly cookies<br/>admin / lane session"]
+    end
+
+    subgraph EDGE["Cloudflare Worker / Vinext"]
+        GATEWAY["🛡️ worker/index.ts<br/>登入、限流與安全標頭"]
+        SHARED_API["🔌 /api/shared-checkin<br/>活動、掃描與投影 API"]
+        RETENTION["♻️ 每日 retention job<br/>刪除到期活動"]
+        ASSETS["SSR 與靜態資產"]
+    end
+
+    D1[("🗄️ Cloudflare D1<br/>活動、名單、lanes、activity、audit")]
+
+    ADMIN --> ADMIN_UI
+    LANE --> SCAN_UI
+    AUDIENCE --> PROJECTION_UI
+    OPS --> GATEWAY
+    ADMIN_UI <--> IDB
+    SCAN_UI <--> IDB
+    SCAN_UI <--> LOCAL
+    GATEWAY --> COOKIES
+    ADMIN_UI --> GATEWAY
+    SCAN_UI --> GATEWAY
+    PROJECTION_UI --> GATEWAY
+    GATEWAY --> SHARED_API
+    GATEWAY --> RETENTION
+    GATEWAY --> ASSETS
+    SHARED_API <--> D1
+    RETENTION --> D1
+
+    classDef actor fill:#FFF3D6,stroke:#7A4B00,stroke-width:2px,color:#251700
+    classDef browser fill:#E8F2FF,stroke:#0B4F8A,stroke-width:2px,color:#071E33
+    classDef edge fill:#E8F8EE,stroke:#176B3A,stroke-width:2px,color:#092617
+    classDef store fill:#F3E8FF,stroke:#68419B,stroke-width:2px,color:#241238
+
+    class ADMIN,LANE,AUDIENCE,OPS actor
+    class ADMIN_UI,SCAN_UI,PROJECTION_UI,IDB,LOCAL,COOKIES browser
+    class GATEWAY,SHARED_API,RETENTION,ASSETS edge
+    class D1 store

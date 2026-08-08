@@ -28,6 +28,7 @@ import {
   defaultEventName,
   eventDeletionConfirmation,
   isEventDeletionConfirmed,
+  publicProjectionName,
 } from "../app/shared-checkin-policy.ts";
 
 function openSharedDatabase() {
@@ -64,6 +65,22 @@ test("bounds each event at 100 active workstations", () => {
   assert.equal(MAX_SHARED_LANES, 100);
 });
 
+test("enforces attendee and lane relationships in the runtime schema", () => {
+  const database = openSharedDatabase();
+  insertEvent(database);
+  assert.throws(() => database.prepare(`INSERT INTO checkin_scan_keys
+    (event_id, key_hash, attendee_id) VALUES ('event-1', 'hash-1', 'missing')`).run(), /FOREIGN KEY/);
+  database.prepare(`INSERT INTO checkin_attendees
+    (event_id, attendee_id, position, name, original_json)
+    VALUES ('event-1', 'guest-1', 0, 'Guest', '{}')`).run();
+  database.prepare(`INSERT INTO checkin_scan_keys
+    (event_id, key_hash, attendee_id) VALUES ('event-1', 'hash-1', 'guest-1')`).run();
+  assert.throws(() => database.prepare(`INSERT INTO checkin_activity
+    (event_id, attendee_id, lane_id, outcome, occurred_at, request_id)
+    VALUES ('event-1', 'guest-1', 'missing', 'success', '2026-08-08T00:00:00.000Z', 'request-1')`).run(), /FOREIGN KEY/);
+  database.close();
+});
+
 test("requires the exact event-specific confirmation string for permanent deletion", () => {
   const confirmation = eventDeletionConfirmation("event-1");
   assert.equal(confirmation, "永久刪除活動 event-1");
@@ -76,6 +93,13 @@ test("derives the default event name from the CSV file name", () => {
   assert.equal(defaultEventName("luma-sample-10000.csv"), "luma-sample-10000");
   assert.equal(defaultEventName("活動名單.CSV"), "活動名單");
   assert.equal(defaultEventName(".csv"), "未命名活動");
+});
+
+test("defaults the public projection to anonymous names and supports explicit masking", () => {
+  assert.equal(publicProjectionName("王小明", "count"), "來賓");
+  assert.equal(publicProjectionName("王小明", "masked"), "王○明");
+  assert.equal(publicProjectionName("Amy Chen", "masked"), "A○○n");
+  assert.equal(publicProjectionName("王小明", "names"), "王小明");
 });
 
 test("detects single-device check-in differences before server sync", () => {
@@ -400,28 +424,61 @@ test("a direct scan response cannot skip unseen activity from another client", (
   assert.equal(next.sharedEvent.cursor, 40, "activity 41 must still be fetched from the ordered changes feed");
 });
 
-test("generated migration is executable and retains query optimization", async () => {
-  const [initialMigration, modeMigration, eventNameMigration] = await Promise.all([
+test("SQL migrations add retention and relational integrity while removing the legacy API table", async () => {
+  const migrations = await Promise.all([
+    readFile(new URL("../drizzle/0000_round_sabra.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0001_volatile_tigra.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0002_chilly_the_spike.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0003_lying_orphan.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0004_illegal_triathlon.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0005_true_zaran.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0006_blue_toxin.sql", import.meta.url), "utf8"),
   ]);
   const database = new DatabaseSync(":memory:");
-  for (const statement of `${initialMigration}\n--> statement-breakpoint\n${modeMigration}\n--> statement-breakpoint\n${eventNameMigration}`.split("--> statement-breakpoint").map((item) => item.trim()).filter(Boolean)) {
-    database.exec(statement);
-  }
+  const apply = (source) => {
+    for (const statement of source.split("--> statement-breakpoint").map((item) => item.trim()).filter(Boolean)) {
+      database.exec(statement);
+    }
+  };
+  for (const migration of migrations.slice(0, 4)) apply(migration);
+  database.prepare(`INSERT INTO checkin_events
+    (event_id, file_name, event_name, headers_json, selected_fields_json, background_color,
+      sync_mode, total, status, active, created_at, updated_at)
+    VALUES ('legacy-event', 'legacy.csv', 'Legacy', '[]', '[]', '#0E0F12',
+      'multi', 0, 'active', 0, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`).run();
+  for (const migration of migrations.slice(4)) apply(migration);
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name);
   assert.ok(tables.includes("checkin_events"));
   assert.ok(tables.includes("checkin_attendees"));
   assert.ok(tables.includes("checkin_scan_keys"));
   assert.ok(tables.includes("checkin_lanes"));
   assert.ok(tables.includes("checkin_activity"));
-  assert.match(initialMigration, /PRAGMA optimize/);
-  assert.match(modeMigration, /ADD `sync_mode`/);
-  assert.match(eventNameMigration, /ADD `event_name`/);
+  assert.ok(tables.includes("checkin_admin_audit"));
+  assert.equal(tables.includes("live_event_state"), false);
+  assert.match(migrations[1], /PRAGMA optimize/);
+  assert.match(migrations[2], /ADD `sync_mode`/);
+  assert.match(migrations[3], /ADD `event_name`/);
   const eventColumns = database.prepare("PRAGMA table_info(checkin_events)").all().map((row) => row.name);
   assert.ok(eventColumns.includes("sync_mode"));
   assert.ok(eventColumns.includes("event_name"));
-  assert.equal(database.prepare("SELECT sync_mode FROM checkin_events LIMIT 1").get(), undefined);
+  assert.ok(eventColumns.includes("projection_privacy"));
+  assert.ok(eventColumns.includes("expires_at"));
+  assert.equal(
+    database.prepare("SELECT expires_at FROM checkin_events WHERE event_id = 'legacy-event'").get().expires_at,
+    "2026-08-31T00:00:00.000Z",
+  );
+  const scanKeyForeignKeys = database.prepare("PRAGMA foreign_key_list(checkin_scan_keys)").all();
+  assert.ok(scanKeyForeignKeys.some((row) => row.table === "checkin_attendees"));
+  const activityForeignKeys = database.prepare("PRAGMA foreign_key_list(checkin_activity)").all();
+  assert.ok(activityForeignKeys.some((row) => row.table === "checkin_attendees"));
+  assert.ok(activityForeignKeys.some((row) => row.table === "checkin_lanes"));
+
+  const resetSql = await readFile(new URL("../scripts/reset-d1.sql", import.meta.url), "utf8");
+  database.exec("PRAGMA foreign_keys = ON");
+  database.exec(resetSql);
+  const resetTables = database.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'checkin_%'",
+  ).all();
+  assert.deepEqual(resetTables, []);
   database.close();
 });

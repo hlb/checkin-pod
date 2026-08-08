@@ -40,3 +40,15 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+
+# Event data and spreadsheet exports contain attendee information by default.
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.zip
+
+# Only reviewed synthetic fixtures and generated public samples belong in Git.
+!tests/fixtures/*.csv
+!public/checkin-pod-sample-150.zip
+!public/checkin-pod-sample-10000.zip
