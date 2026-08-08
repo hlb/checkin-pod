@@ -17,7 +17,7 @@ import {
   writeSavedEvent,
 } from "../checkin-core";
 import { activateSharedLane, readSharedLane, scanSharedEvent } from "../shared-checkin";
-import type { SharedAttendeeResult, SharedLaneBootstrap, SharedLaneSession } from "../shared-checkin";
+import type { SharedAttendeeResult, SharedEventMetadata, SharedLaneBootstrap, SharedLaneSession } from "../shared-checkin";
 
 type GuestResult = {
   kind: LastScan["kind"];
@@ -271,6 +271,44 @@ export default function ScanPage() {
             laneName: "報到工作站",
           }
         : null;
+      const applyRemoteLane = (session: SharedLaneSession, metadata: SharedEventMetadata) => {
+        try {
+          window.localStorage.setItem(LANE_SESSION_KEY, JSON.stringify(session));
+        } catch {
+          // The active page can continue with its in-memory lane session.
+        }
+        setLaneSession(session);
+        setEvent({
+          version: 1,
+          fileName: metadata.fileName,
+          eventName: metadata.eventName,
+          importedAt: metadata.eventId,
+          headers: metadata.headers,
+          attendees: [],
+          displaySettings: {
+            selectedFields: metadata.selectedFields,
+            backgroundColor: metadata.backgroundColor,
+          },
+        });
+        setBackgroundImageDataUrl(null);
+        setError("");
+      };
+
+      // A new workstation link must activate directly from the fragment. It must not
+      // depend on IndexedDB or make a second authenticated request before rendering.
+      if (bootstrapSession) {
+        hasRemoteSession = true;
+        const metadata = await activateSharedLane(bootstrapSession);
+        const preparedSession: SharedLaneSession = {
+          eventId: bootstrapSession.eventId,
+          laneId: bootstrapSession.laneId,
+          laneName: metadata.laneName,
+        };
+        applyRemoteLane(preparedSession, metadata);
+        window.history.replaceState(null, "", window.location.pathname);
+        return;
+      }
+
       let storedSession: SharedLaneSession | null = null;
       try {
         const parsed = JSON.parse(window.localStorage.getItem(LANE_SESSION_KEY) ?? "null") as Partial<SharedLaneSession> | null;
@@ -282,10 +320,20 @@ export default function ScanPage() {
           };
         }
       } catch {
-        window.localStorage.removeItem(LANE_SESSION_KEY);
+        try {
+          window.localStorage.removeItem(LANE_SESSION_KEY);
+        } catch {
+          // Continue without device-local lane metadata.
+        }
       }
-      const saved = await readSavedEvent();
-      if (!bootstrapSession && saved) {
+
+      let saved: SavedEvent | null = null;
+      try {
+        saved = await readSavedEvent();
+      } catch (caught) {
+        if (!storedSession) throw caught;
+      }
+      if (saved) {
         let preparedSaved = saved;
         if (saved.sharedEvent?.laneToken) {
           const metadata = await activateSharedLane({
@@ -314,40 +362,18 @@ export default function ScanPage() {
         setError("");
         return;
       }
-      let remoteSession = storedSession;
-      if (bootstrapSession) {
+      if (storedSession) {
         hasRemoteSession = true;
-        const metadata = await activateSharedLane(bootstrapSession);
-        remoteSession = { ...bootstrapSession, laneName: metadata.laneName };
-        window.history.replaceState(null, "", window.location.pathname);
-      }
-      if (remoteSession) {
-        hasRemoteSession = true;
-        const metadata = await readSharedLane(remoteSession);
+        const metadata = await readSharedLane(storedSession);
         const preparedSession: SharedLaneSession = {
-          eventId: remoteSession.eventId,
-          laneId: remoteSession.laneId,
+          eventId: storedSession.eventId,
+          laneId: storedSession.laneId,
           laneName: metadata.laneName,
         };
-        window.localStorage.setItem(LANE_SESSION_KEY, JSON.stringify(preparedSession));
-        setLaneSession(preparedSession);
-        setEvent({
-          version: 1,
-          fileName: metadata.fileName,
-          eventName: metadata.eventName,
-          importedAt: metadata.eventId,
-          headers: metadata.headers,
-          attendees: [],
-          displaySettings: {
-            selectedFields: metadata.selectedFields,
-            backgroundColor: metadata.backgroundColor,
-          },
-        });
-        setBackgroundImageDataUrl(null);
-        setError("");
+        applyRemoteLane(preparedSession, metadata);
         return;
       }
-      setEvent(saved);
+      setEvent(null);
       setLaneSession(null);
       setBackgroundImageDataUrl(null);
       setError("");

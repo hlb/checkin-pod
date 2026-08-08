@@ -90,7 +90,7 @@ npm run dev
 
 ### 多機模式
 
-中控台為每個入口建立獨立工作站連結。啟用密鑰位於 URL fragment，不會送進 access log 或 Referer。伺服器交換密鑰後設定 HttpOnly 工作站 Cookie，畫面立即清除網址中的密鑰。D1 使用條件更新完成報到判定。每筆請求使用 `requestId` 保證冪等性。工作站可以改名、停用與換發連結。
+中控台為每個入口建立獨立工作站連結。啟用密鑰位於 URL fragment，不會送進 access log 或 Referer。新設備開啟連結後直接從伺服器取得活動資料，不需要本機名單。伺服器交換密鑰後設定 HttpOnly 工作站 Cookie，畫面立即清除網址中的密鑰。D1 使用條件更新完成報到判定。每筆請求使用 `requestId` 保證冪等性。工作站可以改名、停用與換發連結。
 
 ## CSV 匯入
 

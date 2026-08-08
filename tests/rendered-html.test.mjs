@@ -257,6 +257,12 @@ test("wires persistence, scanner, secured projection feed, and event controls", 
   assert.doesNotMatch(scanPage, /commitScan|scan-queue|pendingScans/);
   assert.match(scanPage, /scanSharedEvent/);
   assert.match(scanPage, /LANE_SESSION_KEY/);
+  const laneActivationIndex = scanPage.indexOf("await activateSharedLane(bootstrapSession)");
+  const localEventReadIndex = scanPage.indexOf("saved = await readSavedEvent()");
+  assert.ok(laneActivationIndex >= 0, "the scanner must activate a workstation link");
+  assert.ok(localEventReadIndex >= 0, "the scanner must retain its local event fallback");
+  assert.ok(laneActivationIndex < localEventReadIndex, "a new workstation link must activate before reading IndexedDB");
+  assert.match(scanPage, /applyRemoteLane\(preparedSession, metadata\);[\s\S]*history\.replaceState/);
   assert.doesNotMatch(page, /indexedDB\.open/);
   assert.match(core, /indexedDB\.open/);
   assert.match(core, /DB_VERSION = 2/);

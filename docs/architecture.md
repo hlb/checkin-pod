@@ -74,7 +74,7 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 1. 中控台將活動 metadata 與最多 10,000 位參加者分段上傳至 D1。
 2. 伺服器建立活動、主 lane 與隨機 lane token，只保存 token SHA-256。
 3. 中控台建立 `/scan#event=…&lane=…&token=…` 工作站連結。fragment 不會成為 HTTP request 或 Referer。
-4. 工作站使用 POST 交換 bootstrap token。伺服器設定 `HttpOnly; SameSite=Strict; Secure` production Cookie，瀏覽器立即清除 fragment。
+4. 工作站使用 POST 交換 bootstrap token。啟用回應直接提供活動 metadata，不依賴新設備的 IndexedDB，也不需要先送出第二個認證請求。伺服器設定 `HttpOnly; SameSite=Strict; Secure` production Cookie，瀏覽器立即清除 fragment。
 5. Local Storage 只保存 event、lane 與 lane name，不保存 token 或掃描內容。
 6. API 將 QR Code 正規化並以 SHA-256 雜湊查找 attendee。
 7. SQL 只在 `checked_in_at IS NULL` 時更新 attendee。

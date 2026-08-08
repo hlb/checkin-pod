@@ -61,6 +61,7 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 - 管理 session cookie 使用 `HttpOnly`、`SameSite=Strict` 與 production `Secure`。
 - 管理 session 使用獨立 `SESSION_SECRET` 簽章，最長有效 8 小時。
 - 工作站 bootstrap secret 只放在 URL fragment，交換後立即從網址與瀏覽器資料移除。
+- 新工作站連結先完成 bootstrap activation，再讀取任何 IndexedDB 活動；啟用回應直接建立當前畫面。
 - 新增 API action 時先定義 actor、資料範圍、輸入上限、重放行為與 rate limit。
 - 狀態變更使用 POST、PUT、PATCH 或 DELETE。GET 保持唯讀。
 
