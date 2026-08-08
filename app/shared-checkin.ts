@@ -89,6 +89,17 @@ export type SharedAdminEventMetadata = {
   syncMode: CheckInMode;
 };
 
+export type SharedEventHistoryItem = {
+  eventId: string;
+  fileName: string;
+  importedAt: string;
+  updatedAt: string;
+  total: number;
+  arrived: number;
+  active: boolean;
+  syncMode: CheckInMode;
+};
+
 export type SingleCheckInChange = Pick<Attendee, "id" | "checkedInAt">;
 
 export class SharedApiError extends Error {
@@ -430,6 +441,19 @@ export async function fetchActiveSharedEventSummary(eventId = "") {
     .then((body) => body.event);
 }
 
+export async function fetchSharedEventHistory() {
+  return apiJson<{ events: SharedEventHistoryItem[] }>("/api/shared-checkin?mode=events")
+    .then((body) => body.events);
+}
+
+export async function setSharedEventActive(eventId: string, active: boolean) {
+  await apiJson<{ ok: true }>("/api/shared-checkin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: active ? "activate_event" : "deactivate_event", eventId }),
+  });
+}
+
 export async function fetchSharedRosterPage(eventId = "", afterPosition = -1) {
   const query = new URLSearchParams({ mode: "roster", afterPosition: String(afterPosition), limit: "500" });
   if (eventId) query.set("eventId", eventId);
@@ -460,8 +484,8 @@ export async function fetchCompleteSharedRoster(eventId = "") {
   return { event: metadata, attendees };
 }
 
-export async function restoreActiveSharedEvent(): Promise<SavedEvent | null> {
-  const restored = await fetchCompleteSharedRoster();
+export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | null> {
+  const restored = await fetchCompleteSharedRoster(eventId);
   if (!restored.event) return null;
   const restoredAt = new Date().toISOString();
   if (restored.event.syncMode === "single") {
@@ -511,6 +535,10 @@ export async function restoreActiveSharedEvent(): Promise<SavedEvent | null> {
       cursor: restored.event.cursor,
     },
   };
+}
+
+export async function restoreActiveSharedEvent() {
+  return restoreSharedEvent();
 }
 
 export async function updateSharedSettings(eventId: string, settings: DisplaySettings) {

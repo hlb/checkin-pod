@@ -32,6 +32,10 @@ npm run dev
 
 匯入 CSV 前可選擇報到模式。
 
+## 活動歷史
+
+伺服器以獨立 `event_id` 保存每場活動。中控台的「活動歷史」顯示最近 100 場活動、報到人數與報到模式。按「載入活動」可在目前裝置還原該場名單與報到狀態。清除本機紀錄會停止該活動的公開投影，伺服器活動歷史仍會保留。
+
 ## 現場使用
 
 1. 匯入 Luma 或 KKTIX 匯出的 CSV。Luma 會辨識 `qr_code_url` 與 `approval_status`；KKTIX 會辨識 `QR Code 序號`、`票券付款狀態` 與 `Attendance Book`，只納入可報到的 `approved`／`paid` 來賓並保留既有報到時間。

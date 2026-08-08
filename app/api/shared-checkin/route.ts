@@ -556,6 +556,23 @@ async function handleAdminMutation(request: Request, body: Record<string, unknow
       WHERE event_id = ?`).bind(cue.id, cue.type, cue.at, cue.at, eventId).run();
     return noStoreJson({ cue });
   }
+  if (body.action === "activate_event") {
+    const event = await database.prepare("SELECT 1 AS found FROM checkin_events WHERE event_id = ? AND status = 'active'")
+      .bind(eventId).first();
+    if (!event) return noStoreJson({ error: "event_not_found" }, { status: 404 });
+    const now = new Date().toISOString();
+    await database.batch([
+      database.prepare("UPDATE checkin_events SET active = 0 WHERE active = 1 AND event_id <> ?").bind(eventId),
+      database.prepare("UPDATE checkin_events SET active = 1, updated_at = ? WHERE event_id = ?")
+        .bind(now, eventId),
+    ]);
+    return noStoreJson({ ok: true });
+  }
+  if (body.action === "deactivate_event") {
+    await database.prepare("UPDATE checkin_events SET active = 0, updated_at = ? WHERE event_id = ?")
+      .bind(new Date().toISOString(), eventId).run();
+    return noStoreJson({ ok: true });
+  }
   if (body.action === "delete_event") {
     await database.prepare("DELETE FROM checkin_events WHERE event_id = ?").bind(eventId).run();
     return noStoreJson({ ok: true });
@@ -584,6 +601,8 @@ export async function POST(request: Request) {
       case "rotate_lane": return handleLaneMutation(request, body, database);
       case "update_settings":
       case "cue":
+      case "activate_event":
+      case "deactivate_event":
       case "delete_event": return handleAdminMutation(request, body, database);
       default: return noStoreJson({ error: "invalid_payload" }, { status: 400 });
     }
@@ -624,6 +643,34 @@ async function handleAdminSummaryGet(request: Request, url: URL, database: D1Dat
   if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
   const event = await findAdminEvent(database, safeText(url.searchParams.get("eventId"), 80));
   return noStoreJson({ event: event ? await adminEventMetadata(database, event) : null });
+}
+
+async function handleEventHistoryGet(request: Request, database: D1Database) {
+  if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
+  const result = await database.prepare(`SELECT e.event_id, e.file_name, e.sync_mode, e.total,
+      e.active, e.created_at, e.updated_at,
+      COALESCE(SUM(CASE WHEN a.checked_in_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS arrived
+    FROM checkin_events e
+    LEFT JOIN checkin_attendees a ON a.event_id = e.event_id
+    WHERE e.status = 'active'
+    GROUP BY e.event_id, e.file_name, e.sync_mode, e.total, e.active, e.created_at, e.updated_at
+    ORDER BY e.active DESC, e.created_at DESC
+    LIMIT 100`).all<{
+      event_id: string; file_name: string; sync_mode: "single" | "multi"; total: number;
+      active: number; created_at: string; updated_at: string; arrived: number;
+    }>();
+  return noStoreJson({
+    events: result.results.map((event) => ({
+      eventId: event.event_id,
+      fileName: event.file_name,
+      syncMode: event.sync_mode,
+      total: event.total,
+      arrived: event.arrived,
+      active: Boolean(event.active),
+      importedAt: event.created_at,
+      updatedAt: event.updated_at,
+    })),
+  });
 }
 
 async function handleRosterGet(request: Request, url: URL, database: D1Database) {
@@ -753,6 +800,7 @@ export async function GET(request: Request) {
       case "lane": return handleLaneGet(url, database);
       case "lanes": return handleLaneListGet(request, url, database);
       case "admin_summary": return handleAdminSummaryGet(request, url, database);
+      case "events": return handleEventHistoryGet(request, database);
       case "roster": return handleRosterGet(request, url, database);
       case "changes": return handleChangesGet(request, url, database);
       case "projection": return handleProjectionGet(url, database);

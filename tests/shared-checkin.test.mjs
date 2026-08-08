@@ -215,6 +215,45 @@ test("allows exactly one winner when two clients atomically check in the same at
   database.close();
 });
 
+test("keeps attendee totals and check-in progress separate in event history", () => {
+  const database = openSharedDatabase();
+  insertEvent(database, 2);
+  database.prepare(`INSERT INTO checkin_events
+    (event_id, file_name, headers_json, selected_fields_json, background_color,
+      sync_mode, total, status, active, created_at, updated_at)
+    VALUES (?, ?, '[]', '[]', '#0E0F12', 'single', ?, 'active', 0, ?, ?)`).run(
+      "event-2",
+      "second-event.csv",
+      1,
+      "2026-08-07T00:00:00.000Z",
+      "2026-08-07T00:00:00.000Z",
+    );
+  const attendeeInsert = database.prepare(`INSERT INTO checkin_attendees
+    (event_id, attendee_id, position, name, checked_in_at, original_json)
+    VALUES (?, ?, ?, ?, ?, '{}')`);
+  attendeeInsert.run("event-1", "guest-1", 0, "王小明", "2026-08-08T01:00:00.000Z");
+  attendeeInsert.run("event-1", "guest-2", 1, "陳小華", null);
+  attendeeInsert.run("event-2", "guest-1", 0, "林小美", "2026-08-07T01:00:00.000Z");
+
+  const events = database.prepare(`SELECT e.event_id, e.total,
+      COALESCE(SUM(CASE WHEN a.checked_in_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS arrived
+    FROM checkin_events e
+    LEFT JOIN checkin_attendees a ON a.event_id = e.event_id
+    WHERE e.status = 'active'
+    GROUP BY e.event_id, e.total
+    ORDER BY e.active DESC, e.created_at DESC`).all();
+
+  assert.deepEqual(events.map((event) => ({
+    eventId: event.event_id,
+    total: event.total,
+    arrived: event.arrived,
+  })), [
+    { eventId: "event-1", total: 2, arrived: 1 },
+    { eventId: "event-2", total: 1, arrived: 1 },
+  ]);
+  database.close();
+});
+
 test("stores 10,000 attendees and uses indexed QR and activity cursor lookups", () => {
   const database = openSharedDatabase();
   insertEvent(database, 10_000);

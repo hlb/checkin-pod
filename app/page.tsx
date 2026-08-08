@@ -45,24 +45,30 @@ import {
   applySharedScanResult,
   checkInStateSignature,
   createSharedLane,
-  deleteSharedEvent,
   diffSingleCheckInState,
   fetchSharedChanges,
+  fetchSharedEventHistory,
   fetchActiveSharedEventSummary,
   fetchCompleteSharedRoster,
   fetchSharedLanes,
   importSharedEvent,
   renameSharedLane,
-  restoreActiveSharedEvent,
+  restoreSharedEvent,
   revokeSharedLane,
   rotateSharedLane,
   scanSharedEventWithRetry,
   sendSharedProjectionCue,
   setSharedAttendeeCheckIn,
+  setSharedEventActive,
   syncSingleCheckInState,
   updateSharedSettings,
 } from "./shared-checkin";
-import type { SharedAdminEventMetadata, SharedLane, SharedLaneRecord } from "./shared-checkin";
+import type {
+  SharedAdminEventMetadata,
+  SharedEventHistoryItem,
+  SharedLane,
+  SharedLaneRecord,
+} from "./shared-checkin";
 
 type ScanResult =
   | { kind: "success"; attendee: Attendee; message: string }
@@ -182,6 +188,17 @@ function buildArrivalChart(attendees: Attendee[]): ArrivalChart {
   };
 }
 
+function formatEventDate(value: string) {
+  return new Intl.DateTimeFormat("zh-TW", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+}
+
 async function prepareBackgroundImage(file: File) {
   if (!BACKGROUND_IMAGE_TYPES.has(file.type)) {
     throw new Error("背景圖只支援 JPG、PNG 或 WebP 格式。");
@@ -270,6 +287,9 @@ export default function Home() {
   const [singleSyncView, setSingleSyncView] = useState<SingleSyncView>({ kind: "idle", message: "" });
   const [singleSyncBusy, setSingleSyncBusy] = useState(false);
   const [singleSyncProgress, setSingleSyncProgress] = useState(0);
+  const [eventHistory, setEventHistory] = useState<SharedEventHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyActionId, setHistoryActionId] = useState("");
   const scanInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
@@ -283,6 +303,7 @@ export default function Home() {
   const sharedEventId = event?.sharedEvent?.eventId;
   const sharedLaneId = event?.sharedEvent?.laneId;
   const sharedInitialCursor = event?.sharedEvent?.cursor ?? 0;
+  const currentServerEventId = event?.sharedEvent?.eventId ?? event?.singleSync?.eventId ?? "";
 
   const refreshLanes = useCallback(async () => {
     if (!sharedEventId) {
@@ -295,6 +316,16 @@ export default function Home() {
       // Changes polling still verifies connectivity; keep the last good list during a brief outage.
     }
   }, [sharedEventId]);
+
+  const refreshEventHistory = useCallback(async () => {
+    try {
+      setEventHistory(await fetchSharedEventHistory());
+    } catch {
+      // Keep the last successful history list during a brief outage.
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
 
   const syncSingleDevice = useCallback(async (source: "initial" | "automatic" | "manual" = "manual") => {
     if (singleSyncBusyRef.current) return;
@@ -401,6 +432,15 @@ export default function Home() {
     };
     void load();
   }, []);
+
+  useEffect(() => {
+    const initial = window.setTimeout(() => void refreshEventHistory(), 0);
+    const timer = window.setInterval(() => void refreshEventHistory(), 30_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [refreshEventHistory]);
 
   useEffect(() => {
     if (!event || event.checkInMode !== "single" || singleSyncBusyRef.current) return;
@@ -772,6 +812,7 @@ export default function Home() {
         setSearch("");
         setGuestPage(1);
         if (importMode === "single") await syncSingleDevice("initial");
+        await refreshEventHistory();
         window.setTimeout(() => scanInputRef.current?.focus(), 80);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "無法讀取這份 CSV，請確認檔案格式。 ");
@@ -781,7 +822,7 @@ export default function Home() {
         if (fileInputRef.current) fileInputRef.current.value = "";
       }
     },
-    [event, importMode, syncSingleDevice],
+    [event, importMode, refreshEventHistory, syncSingleDevice],
   );
 
   const handleFileChange = (changeEvent: ChangeEvent<HTMLInputElement>) => {
@@ -900,7 +941,7 @@ export default function Home() {
       return;
     }
     const serverEventId = event.sharedEvent?.eventId ?? event.singleSync?.eventId;
-    if (serverEventId) await deleteSharedEvent(serverEventId).catch(() => undefined);
+    if (serverEventId) await setSharedEventActive(serverEventId, false).catch(() => undefined);
     await clearSavedEvent();
     await clearLiveEvent().catch(() => undefined);
     broadcastEventChange();
@@ -910,6 +951,7 @@ export default function Home() {
     setSearch("");
     setFilter("all");
     setShowMenu(false);
+    await refreshEventHistory();
   };
 
   const selectedDisplayFields = event
@@ -1071,17 +1113,48 @@ export default function Home() {
     setRecovering(true);
     setError("");
     try {
-      const restored = await restoreActiveSharedEvent();
+      const restored = await restoreSharedEvent(recoverableEvent?.eventId);
       if (!restored) throw new Error("目前沒有可以復原的進行中活動。");
+      const serverEventId = restored.sharedEvent?.eventId ?? restored.singleSync?.eventId;
+      if (serverEventId) await setSharedEventActive(serverEventId, true);
       const committed = await replaceSavedEvent(restored);
       setEvent(committed.event);
       setRecoverableEvent(null);
       setBackgroundImageDataUrl(null);
       setScanResult(null);
+      await refreshEventHistory();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "無法復原活動名單。");
     } finally {
       setRecovering(false);
+    }
+  };
+
+  const loadHistoryEvent = async (historyEvent: SharedEventHistoryItem) => {
+    if (historyEvent.eventId === currentServerEventId) return;
+    if (event && !window.confirm("載入歷史活動會取代這台裝置目前顯示的活動。伺服器上的活動資料會保留。要繼續嗎？")) {
+      return;
+    }
+    setHistoryActionId(historyEvent.eventId);
+    setError("");
+    try {
+      const restored = await restoreSharedEvent(historyEvent.eventId);
+      if (!restored) throw new Error("找不到這場歷史活動。");
+      await setSharedEventActive(historyEvent.eventId, true);
+      const committed = await replaceSavedEvent(restored);
+      setEvent(committed.event);
+      setRecoverableEvent(null);
+      setBackgroundImageDataUrl(null);
+      setScanResult(null);
+      setFilter("all");
+      setSearch("");
+      setGuestPage(1);
+      await refreshEventHistory();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法載入這場歷史活動。");
+    } finally {
+      setHistoryActionId("");
     }
   };
 
@@ -1731,6 +1804,66 @@ export default function Home() {
           </section>
         </>
       )}
+
+      <section className="event-history-section" aria-labelledby="event-history-title">
+        <div className="event-history-heading">
+          <div>
+            <p className="section-kicker">Event history</p>
+            <h2 id="event-history-title">活動歷史</h2>
+            <p>伺服器分開保存每場活動的名單與報到紀錄。可在這台裝置載入任一活動。</p>
+          </div>
+          <button
+            type="button"
+            disabled={historyLoading}
+            onClick={() => {
+              setHistoryLoading(true);
+              void refreshEventHistory();
+            }}
+          >
+            {historyLoading ? "更新中…" : "更新列表"}
+          </button>
+        </div>
+        <div className="event-history-list">
+          {eventHistory.map((historyEvent) => {
+            const isCurrent = historyEvent.eventId === currentServerEventId;
+            const progress = historyEvent.total
+              ? Math.round((historyEvent.arrived / historyEvent.total) * 100)
+              : 0;
+            return (
+              <article className={`event-history-item ${isCurrent ? "is-current" : ""}`} key={historyEvent.eventId}>
+                <div className="event-history-name">
+                  <div>
+                    {isCurrent ? <span className="current-event-badge">目前裝置</span> : null}
+                    {historyEvent.active ? <span className="active-event-badge">投影中</span> : null}
+                  </div>
+                  <strong>{historyEvent.fileName.replace(/\.csv$/i, "")}</strong>
+                  <small>{formatEventDate(historyEvent.importedAt)} · {historyEvent.syncMode === "single" ? "單機" : "多機"}</small>
+                </div>
+                <div className="event-history-progress">
+                  <div><span>報到進度</span><strong>{historyEvent.arrived.toLocaleString()} / {historyEvent.total.toLocaleString()}</strong></div>
+                  <div className="history-progress-track" role="progressbar" aria-label={`${historyEvent.fileName} 報到進度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+                    <i style={{ width: `${progress}%` }} />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isCurrent || Boolean(historyActionId)}
+                  onClick={() => void loadHistoryEvent(historyEvent)}
+                >
+                  {isCurrent ? "目前活動" : historyActionId === historyEvent.eventId ? "載入中…" : "載入活動"}
+                </button>
+              </article>
+            );
+          })}
+          {!eventHistory.length ? (
+            <div className="event-history-empty">
+              <strong>{historyLoading ? "正在讀取活動…" : "目前沒有活動紀錄"}</strong>
+              <span>{historyLoading ? "" : "匯入第一份 CSV 後，活動會顯示在這裡。"}</span>
+            </div>
+          ) : null}
+        </div>
+        {eventHistory.length >= 100 ? <p className="event-history-limit">顯示最近 100 場活動</p> : null}
+      </section>
 
       <footer>
         <p><span className="brand-mark small">P</span> Checkin Pod · 活動報到輔助機</p>
