@@ -50,6 +50,13 @@
       "when": 1786190787094,
       "tag": "0006_blue_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786200000000,
+      "tag": "0007_reset_production",
+      "breakpoints": true
     }
   ]
 }

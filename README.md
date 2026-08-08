@@ -192,13 +192,15 @@ npm run stress
 - 靜態資產 binding
 - HTTPS
 
-production config 已定義每天 `03:17 UTC` 的資料保存排程。本次安全版本採清空重建策略，不保留舊活動資料：先執行 `scripts/reset-d1.sql`，再部署新 Worker，最後請求一次 projection API 觸發 runtime schema 建立。`drizzle/*.sql` 保留給 migration 測試與需要保留既有資料的部署者。
+production config 已定義每天 `03:17 UTC` 的資料保存排程。本次安全版本採清空重建策略，不保留舊活動資料。Sites 部署會執行 `drizzle/0007_reset_production.sql`，依外鍵順序刪除舊資料表並立即建立目前 schema。
 
 ```bash
 npx wrangler d1 execute <database-name> --remote --file scripts/reset-d1.sql
 ```
 
 reset 會永久刪除活動、參加者、QR scan keys、工作站、報到紀錄、audit 與 legacy projection 資料。部署完成後，請驗證登入、登出、限流、安全標頭、CSV 匯入、單機同步、多機工作站、投影、活動還原、到期清除與永久刪除。
+
+`scripts/reset-d1.sql` 提供非 Sites 部署的人工 reset。`drizzle/0000`–`0006` 保留給 migration regression tests 與需要保留既有資料的部署者。
 
 ## 參與開發
 

@@ -210,12 +210,12 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 本次正式部署採資料庫清空重建：
 
 1. 暫停活動報到與管理操作。
-2. 對指定 D1 執行 `scripts/reset-d1.sql`。此步驟永久刪除所有活動與 audit 資料。
+2. Sites 在部署時執行 `drizzle/0007_reset_production.sql`，永久刪除所有活動與 audit 資料並建立目前 schema。
 3. 部署新 Worker。
-4. 請求 `/api/shared-checkin?mode=projection`，由 `SHARED_SCHEMA_SQL` 建立新 schema。
+4. 請求 `/api/shared-checkin?mode=projection`，確認 runtime schema 與新資料庫可以正常使用。
 5. 驗證登入、限流、工作站啟用、scan、投影隱私、history、delete 與 scheduled cleanup。
 
-`drizzle/0004`–`0006` 保留給 migration 測試與需要保留既有資料的其他部署者。本次部署不執行資料回復。若 Worker 需要回退，重新清空 D1 並部署與該版本相容的 Worker。本機開發的 Wrangler / Miniflare 狀態保存在 `.wrangler/`。
+`drizzle/0000`–`0006` 保留給 migration 測試與需要保留既有資料的其他部署者。`scripts/reset-d1.sql` 提供非 Sites 部署的人工 reset。本次部署不執行資料回復。若 Worker 需要回退，重新清空 D1 並部署與該版本相容的 Worker。本機開發的 Wrangler / Miniflare 狀態保存在 `.wrangler/`。
 
 ## 10. 失敗模式與復原
 

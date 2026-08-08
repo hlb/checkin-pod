@@ -433,6 +433,7 @@ test("SQL migrations add retention and relational integrity while removing the l
     readFile(new URL("../drizzle/0004_illegal_triathlon.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0005_true_zaran.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0006_blue_toxin.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0007_reset_production.sql", import.meta.url), "utf8"),
   ]);
   const database = new DatabaseSync(":memory:");
   const apply = (source) => {
@@ -446,7 +447,7 @@ test("SQL migrations add retention and relational integrity while removing the l
       sync_mode, total, status, active, created_at, updated_at)
     VALUES ('legacy-event', 'legacy.csv', 'Legacy', '[]', '[]', '#0E0F12',
       'multi', 0, 'active', 0, '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')`).run();
-  for (const migration of migrations.slice(4)) apply(migration);
+  for (const migration of migrations.slice(4, 7)) apply(migration);
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name);
   assert.ok(tables.includes("checkin_events"));
   assert.ok(tables.includes("checkin_attendees"));
@@ -472,6 +473,18 @@ test("SQL migrations add retention and relational integrity while removing the l
   const activityForeignKeys = database.prepare("PRAGMA foreign_key_list(checkin_activity)").all();
   assert.ok(activityForeignKeys.some((row) => row.table === "checkin_attendees"));
   assert.ok(activityForeignKeys.some((row) => row.table === "checkin_lanes"));
+
+  apply(migrations[7]);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM checkin_events").get().count, 0);
+  const rebuiltTables = database.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'checkin_%'",
+  ).all().map((row) => row.name);
+  assert.ok(rebuiltTables.includes("checkin_events"));
+  assert.ok(rebuiltTables.includes("checkin_attendees"));
+  assert.ok(rebuiltTables.includes("checkin_scan_keys"));
+  assert.ok(rebuiltTables.includes("checkin_lanes"));
+  assert.ok(rebuiltTables.includes("checkin_activity"));
+  assert.ok(rebuiltTables.includes("checkin_admin_audit"));
 
   const resetSql = await readFile(new URL("../scripts/reset-d1.sql", import.meta.url), "utf8");
   database.exec("PRAGMA foreign_keys = ON");

@@ -181,15 +181,16 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 
 ## 6. 資料庫重建、migration 與 rollback
 
-本次正式部署由維護者選擇清空重建，不保存舊活動資料。`scripts/reset-d1.sql` 會依外鍵順序刪除 shared check-in、admin audit 與 legacy tables；新 Worker 的第一個 shared API request 會用 runtime schema 重建資料表。
+本次正式部署由維護者選擇清空重建，不保存舊活動資料。Sites 會執行 `drizzle/0007_reset_production.sql`，依外鍵順序刪除 shared check-in、admin audit 與 legacy tables，並立即建立目前 schema。`scripts/reset-d1.sql` 提供非 Sites 部署的人工 reset。
 
 | Migration | 內容 | 風險控制 |
 |---|---|---|
 | `0004_illegal_triathlon.sql` | admin audit、projection privacy、expiry、既有活動 +30 天 backfill | 套用前確認活動保存政策；完成後核對 expiry index |
 | `0005_true_zaran.sql` | lane composite unique、刪除 conflict sentinel、重建 activity / scan keys composite FKs | 僅用於保留資料的部署路徑；先執行 foreign key integrity check |
 | `0006_blue_toxin.sql` | 移除 `live_event_state` | 先確認 production 沒有 legacy client；資料表內容不可自動回復 |
+| `0007_reset_production.sql` | 刪除全部活動與 audit tables，重建目前 schema | 維護者已明確接受永久刪除；部署後確認活動數為 0 |
 
-本次部署順序是停止寫入、執行 reset SQL、部署 Worker、觸發 schema 建立、執行 smoke tests。舊活動、audit 與 legacy snapshot 會永久刪除。rollback 會再次清空 D1，再部署相容的 Worker，不執行資料回復。
+本次部署順序是停止寫入、由 Sites 執行 reset/rebuild migration、部署 Worker、執行 smoke tests。舊活動、audit 與 legacy snapshot 會永久刪除。rollback 會再次清空 D1，再部署相容的 Worker，不執行資料回復。
 
 `0004`–`0006` 保留給 migration regression tests 與需要保留資料的其他部署者。這些部署者應先在 preview / staging 確認 row counts、foreign keys 與 expiry。
 
