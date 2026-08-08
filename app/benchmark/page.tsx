@@ -5,7 +5,7 @@ import styles from "./benchmark.module.css";
 
 const pageTitle = "Checkin Pod 效能實測｜10,000 人 × 50 個入口";
 const pageDescription =
-  "給活動主辦單位的公開效能示範：10,000 位來賓、50 個並行報到入口、重複掃描防護與完整名單復原實測。";
+  "10,000 位來賓、50 個並行入口、496.86 req/s、0 次非預期失敗。";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -47,20 +47,20 @@ const headlineMetrics = [
 const organizerOutcomes = [
   {
     number: "01",
-    title: "尖峰入場不必只開一個口",
-    body: "50 個獨立工作站同時掃描，共享同一份即時名單；每個入口都有自己的安全連結與成功統計。",
-    proof: "50 / 50 工作站驗證成功",
+    title: "50 個入口同步報到",
+    body: "50 個獨立工作站共享同一份即時名單。每個入口使用獨立安全連結，並記錄各自的成功數。",
+    proof: "50 / 50 工作站連線成功",
   },
   {
     number: "02",
-    title: "同一張票搶刷，只會成功一次",
-    body: "刻意讓 50 台工作站同時掃描同一張票，每一輪都只有一台成功，其餘立即標記為已報到。",
-    proof: "10 輪競態全部正確",
+    title: "50 台同掃，1 台成功",
+    body: "50 台工作站同時掃描同一張票。系統記錄 1 次成功，並回報 49 次已報到。",
+    proof: "10 / 10 輪競態結果一致",
   },
   {
     number: "03",
-    title: "裝置資料遺失，名單仍可找回",
-    body: "報到資料以伺服器為共同事實來源；測試中可重新發現活動並分頁復原全部名單與報到狀態。",
+    title: "10,000 筆名單完整復原",
+    body: "伺服器保存共同活動狀態。工作站可重新載入 10,000 筆名單與完整報到時間。",
     proof: "10,000 / 10,000 完整復原",
   },
 ];
@@ -81,14 +81,14 @@ const testSteps = [
 ];
 
 const verifiedChecks = [
-  "10,001 人超過容量時安全拒絕",
-  "錯誤工作站憑證無法讀取或掃描",
-  "工作站連結換發後，舊連結立即失效",
-  "停用入口後，掃描請求立即被拒絕",
-  "同一請求重送不會產生第二次報到",
-  "未知票券全部正確辨識，不會誤放行",
-  "工作站成功數與資料庫活動紀錄一致",
-  "投影牆可取得完整 10,000 人狀態",
+  "10,001 人容量邊界回報 HTTP 413",
+  "錯誤工作站憑證回報 HTTP 401",
+  "舊工作站憑證回報 HTTP 401",
+  "停用入口的掃描請求回報 HTTP 401",
+  "同一請求重送保留同一筆成功紀錄",
+  "50 / 50 筆未知票券回報 unknown",
+  "10,000 筆工作站成功數與活動紀錄一致",
+  "投影牆取得 10,000 筆來賓狀態",
 ];
 
 function Brand() {
@@ -121,9 +121,9 @@ export default function BenchmarkPage() {
       <section className={styles.hero}>
         <div className={styles.heroCopy}>
           <p className={styles.eyebrow}><span /> 10,000 人 × 50 工作站壓力測試</p>
-          <h1>大量入場，<br />每一個入口都拿到<br /><em>同一個正確答案。</em></h1>
+          <h1>10,000 位來賓，<br />50 個入口同步報到，<br /><em>496.86 req/s。</em></h1>
           <p className={styles.heroLead}>
-            給活動主辦單位的公開實測：從萬人名單匯入、多入口同時掃描，到同票搶刷與名單復原，逐項驗證現場最容易出錯的瞬間。
+            本次壓測完成 10,000 人名單匯入、50 個入口同步掃描、10 輪同票競態與完整名單復原。
           </p>
           <div className={styles.heroActions}>
             <a className={styles.primaryAction} href="/checkin-pod-sample-10000.zip" download>
@@ -142,7 +142,7 @@ export default function BenchmarkPage() {
             <strong>PASS</strong>
           </div>
           <div className={styles.liveTotal}>
-            <small>資料庫最終已報到</small>
+            <small>最終報到總數</small>
             <strong>10,000 <span>/ 10,000</span></strong>
             <div className={styles.totalTrack}><i /></div>
           </div>
@@ -159,7 +159,7 @@ export default function BenchmarkPage() {
             <div className={styles.raceSplit} aria-label="1 次成功，49 次重複">
               <i /><span />
             </div>
-            <small>其餘 49 台正確回報「已報到」</small>
+            <small>49 台回報「已報到」</small>
           </div>
           <div className={styles.liveFoot}>
             <span><strong>21 / 21</strong> 檢查通過</span>
@@ -179,9 +179,9 @@ export default function BenchmarkPage() {
 
       <section className={styles.section} id="organizer">
         <div className={styles.sectionHeading}>
-          <p className={styles.kicker}>What organizers need to know</p>
-          <h2>主辦單位真正需要放心的，<br />不是跑分，是現場不亂。</h2>
-          <p>每一個數字都對應一個真實活動情境：入口暴增、票券重複、裝置異常，以及活動結束後的完整對帳。</p>
+          <p className={styles.kicker}>10,000 人活動重點</p>
+          <h2>4 組核心數字，<br />呈現完整入場能力。</h2>
+          <p>10,000 人容量、50 個入口、496.86 req/s 與 10,000 / 10,000 資料一致。</p>
         </div>
         <div className={styles.outcomeGrid}>
           {organizerOutcomes.map((outcome) => (
@@ -197,20 +197,20 @@ export default function BenchmarkPage() {
 
       <section className={`${styles.section} ${styles.resultsSection}`} id="results">
         <div className={styles.resultsCopy}>
-          <p className={styles.kicker}>Measured, not estimated</p>
-          <h2>10,542 次掃描請求，<br />沒有非預期失敗。</h2>
+          <p className={styles.kicker}>10,542 次實際請求</p>
+          <h2>10,542 次掃描請求，<br />0 次非預期失敗。</h2>
           <p>
-            測試不是把同一個 API 重複打滿，而是完整模擬名單匯入、工作站授權、一般掃描、同票競態、未知票券、復原、活動紀錄與投影同步。
+            測試流程涵蓋名單匯入、工作站授權、一般掃描、同票競態、未知票券、名單復原、活動紀錄與投影同步。
           </p>
           <div className={styles.responsePills}>
             <span><i className={styles.successDot} />10,002 成功回應</span>
             <span><i className={styles.duplicateDot} />490 已報到回應</span>
-            <span><i className={styles.unknownDot} />50 找不到資料</span>
+            <span><i className={styles.unknownDot} />50 筆未知票券</span>
           </div>
         </div>
         <div className={styles.latencyCard}>
           <div className={styles.latencyHead}>
-            <div><span>掃描 API 回應時間</span><small>越短越快</small></div>
+            <div><span>掃描 API 回應時間</span><small>95.8–384.8 ms</small></div>
             <strong>p50 <em>95.8 ms</em></strong>
           </div>
           <div className={styles.latencyRows}>
@@ -222,7 +222,7 @@ export default function BenchmarkPage() {
               </div>
             ))}
           </div>
-          <p>以上為本次本機環境觀測值；實際現場仍會受網路、資料庫區域、設備與瀏覽器影響。</p>
+          <p>本頁顯示本次本機環境觀測值。現場結果依網路、資料庫區域、設備與瀏覽器條件變化。</p>
         </div>
       </section>
 
@@ -231,9 +231,9 @@ export default function BenchmarkPage() {
           <div className={styles.safetyHeading}>
             <span className={styles.passSeal}>21/21<small>PASS</small></span>
             <div>
-              <p className={styles.kicker}>Consistency & safety</p>
-              <h2>速度之外，還要每一筆都對。</h2>
-              <p>這次壓測同時檢查授權、重複防護、容量邊界、資料復原與跨畫面一致性。</p>
+              <p className={styles.kicker}>21 / 21 檢查通過</p>
+              <h2>21 / 21 項一致性檢查通過。</h2>
+              <p>測試涵蓋工作站授權、重複防護、容量邊界、資料復原與跨畫面一致性。</p>
             </div>
           </div>
           <div className={styles.checkGrid}>
@@ -246,9 +246,9 @@ export default function BenchmarkPage() {
 
       <section className={`${styles.section} ${styles.methodSection}`} id="method">
         <div className={styles.sectionHeading}>
-          <p className={styles.kicker}>How the test ran</p>
-          <h2>不是單點跑分，<br />而是一場完整的模擬入場。</h2>
-          <p>測試腳本建立獨立活動，完成所有檢查後自動清除測試資料，不與真實活動名單混用。</p>
+          <p className={styles.kicker}>5 階段測試流程</p>
+          <h2>5 個階段，<br />完成一次萬人模擬入場。</h2>
+          <p>測試腳本建立獨立活動，依序完成匯入、開站、掃描、搶刷與對帳，最後清除測試資料。</p>
         </div>
         <ol className={styles.testFlow}>
           {testSteps.map((step, index) => (
@@ -259,18 +259,18 @@ export default function BenchmarkPage() {
           ))}
         </ol>
         <aside className={styles.disclosure}>
-          <strong>如何閱讀這份結果</strong>
+          <strong>測試條件</strong>
           <p>
-            這是 2026-08-08 於本機環境執行的工程壓力測試，用來驗證系統邏輯與容量邊界，不等同任何場地的服務水準保證。正式活動仍應依現場網路、入口配置與設備進行演練。
+            本次工程壓測於 2026-08-08 的本機環境執行。正式活動的回應時間取決於現場網路、資料庫區域、入口配置、設備與瀏覽器。主辦單位可使用同一份 10,000 人測試包完成場地演練。
           </p>
         </aside>
       </section>
 
       <section className={styles.ctaSection}>
         <div>
-          <p className={styles.kicker}>Try the same roster</p>
-          <h2>把同一份萬人名單，<br />放進你的活動流程試一次。</h2>
-          <p>兩份匿名測試包共用 QR Code，可先用 150 人快速熟悉，再換成 10,000 人檢查完整流程。</p>
+          <p className={styles.kicker}>10,000 人測試包</p>
+          <h2>下載 10,000 人名單，<br />完成一次場地演練。</h2>
+          <p>150 人與 10,000 人測試包共用 QR Code。先完成 150 人流程，再執行 10,000 人容量演練。</p>
         </div>
         <div className={styles.ctaActions}>
           <a className={styles.lightAction} href="/checkin-pod-sample-150.zip" download>下載 150 人測試包</a>
@@ -280,7 +280,7 @@ export default function BenchmarkPage() {
 
       <footer className={styles.footer}>
         <Brand />
-        <p>讓多個入口一起工作，也讓每一筆報到只發生一次。</p>
+        <p>50 個入口同步工作，每一筆報到維持唯一。</p>
         <nav aria-label="公開頁面">
           <a href="/scan">來賓畫面</a>
           <a href="/projection">投影畫面</a>
