@@ -188,6 +188,11 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(scanPage, /BarcodeDetector/);
   assert.match(scanPage, /deviceId: \{ exact: cameraId \}/);
   assert.match(scanPage, /報到提示音/);
+  assert.match(scanPage, /scanInputTimerRef/);
+  assert.match(scanPage, /onInput=\{handleScanInput\}/);
+  assert.match(scanPage, /inputRef\.current\.value = ""/);
+  assert.doesNotMatch(scanPage, /setScanText/);
+  assert.doesNotMatch(scanPage, /value=\{scanText\}/);
   assert.match(scanPage, /guest-camera-panel/);
   assert.match(scanPage, /鏡頭持續顯示，可直接掃描下一位/);
   assert.match(scanPage, /<video ref=\{videoRef\}[\s\S]*\{!result \? \(/);

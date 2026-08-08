@@ -70,7 +70,6 @@ export default function ScanPage() {
   const [event, setEvent] = useState<SavedEvent | null>(null);
   const [backgroundImageDataUrl, setBackgroundImageDataUrl] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
-  const [scanText, setScanText] = useState("");
   const [result, setResult] = useState<GuestResult | null>(null);
   const [error, setError] = useState("");
   const [cameraActive, setCameraActive] = useState(false);
@@ -89,6 +88,7 @@ export default function ScanPage() {
   const barcodeDetectorRef = useRef<BarcodeDetectorInstance | null>(null);
   const lastCameraCodeRef = useRef("");
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scanInputTimerRef = useRef<number | null>(null);
   const lastPresentedAtRef = useRef<string | null>(null);
   const successAudioRef = useRef<HTMLAudioElement>(null);
   const failureAudioRef = useRef<HTMLAudioElement>(null);
@@ -389,6 +389,7 @@ export default function ScanPage() {
   useEffect(() => {
     return () => {
       if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+      if (scanInputTimerRef.current) clearTimeout(scanInputTimerRef.current);
     };
   }, []);
 
@@ -442,7 +443,9 @@ export default function ScanPage() {
     if (!event) return;
     const code = rawCode.trim().replace(/[\r\n]+$/g, "");
     if (!code) return;
-    setScanText("");
+    if (scanInputTimerRef.current) clearTimeout(scanInputTimerRef.current);
+    scanInputTimerRef.current = null;
+    if (inputRef.current) inputRef.current.value = "";
     const appended = appendPendingScan(pendingScansRef.current, {
       code,
       scannedAt: new Date().toISOString(),
@@ -510,20 +513,23 @@ export default function ScanPage() {
     return () => window.clearInterval(timer);
   }, [cameraActive, processScan]);
 
-  useEffect(() => {
-    if (!event || scanText.trim().length < 3) return;
-    const keys = scanKeysFor(scanText);
-    const isKnown = laneSession || event.attendees.some((attendee) =>
-      attendee.scanKeys.some((key) => keys.includes(key)),
-    );
-    if (!isKnown) return;
-    const timer = window.setTimeout(() => processScan(scanText), 100);
-    return () => window.clearTimeout(timer);
-  }, [event, laneSession, processScan, scanText]);
+  const handleScanInput = (inputEvent: FormEvent<HTMLInputElement>) => {
+    if (scanInputTimerRef.current) clearTimeout(scanInputTimerRef.current);
+    const bufferedCode = inputEvent.currentTarget.value;
+    if (!event || bufferedCode.trim().length < 3) return;
+    scanInputTimerRef.current = window.setTimeout(() => {
+      const currentCode = inputRef.current?.value ?? "";
+      const keys = scanKeysFor(currentCode);
+      const isKnown = laneSession || event.attendees.some((attendee) =>
+        attendee.scanKeys.some((key) => keys.includes(key)),
+      );
+      if (isKnown) processScan(currentCode);
+    }, 100);
+  };
 
   const submitScan = (formEvent: FormEvent) => {
     formEvent.preventDefault();
-    processScan(scanText);
+    processScan(inputRef.current?.value ?? "");
   };
 
   const selectedFields = useMemo(() => (event ? getDisplayFields(event) : []), [event]);
@@ -577,8 +583,7 @@ export default function ScanPage() {
           ref={inputRef}
           id="guest-scan-input"
           className="guest-scan-input"
-          value={scanText}
-          onChange={(changeEvent) => setScanText(changeEvent.target.value)}
+          onInput={handleScanInput}
           autoComplete="off"
           autoCapitalize="off"
           spellCheck={false}
