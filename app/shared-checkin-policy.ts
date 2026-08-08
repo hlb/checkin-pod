@@ -1,4 +1,5 @@
 export const MAX_SHARED_ATTENDEES = 10_000;
+export const MAX_SHARED_LANES = 100;
 export const SHARED_IMPORT_CHUNK_SIZE = 200;
 export const SHARED_CHANGE_PAGE_SIZE = 500;
 

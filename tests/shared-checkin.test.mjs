@@ -5,12 +5,21 @@ import test from "node:test";
 
 import {
   MAX_SHARED_ATTENDEES,
+  MAX_SHARED_LANES,
   SHARED_IMPORT_CHUNK_SIZE,
+  SharedApiError,
   applySharedChanges,
   applySharedScanResult,
   assertSharedCapacity,
   chunkItems,
+  scanSharedEventWithRetry,
 } from "../app/shared-checkin.ts";
+import {
+  MAX_PENDING_SCANS,
+  appendPendingScan,
+  parsePendingScans,
+  scanQueueKey,
+} from "../app/scan-queue.ts";
 import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../app/shared-checkin-sql.ts";
 
 function openSharedDatabase() {
@@ -41,6 +50,93 @@ test("bounds shared events at 10,000 attendees and chunks imports without loss",
   assert.equal(chunks.length, 50);
   assert.ok(chunks.every((chunk) => chunk.length === 200));
   assert.deepEqual(chunks.flat(), attendees);
+});
+
+test("bounds each event at 100 active workstations", () => {
+  assert.equal(MAX_SHARED_LANES, 100);
+});
+
+test("persists only valid queued scans and enforces the offline queue bound", () => {
+  const valid = {
+    code: " QR-001 ",
+    scannedAt: "2026-08-08T01:02:03+08:00",
+    requestId: " request-001 ",
+  };
+  const parsed = parsePendingScans(JSON.stringify([
+    valid,
+    null,
+    { code: "QR-002", scannedAt: "invalid", requestId: "request-002" },
+    { code: "", scannedAt: valid.scannedAt, requestId: "request-003" },
+  ]));
+  assert.deepEqual(parsed, [{
+    code: "QR-001",
+    scannedAt: "2026-08-07T17:02:03.000Z",
+    requestId: "request-001",
+  }]);
+  assert.deepEqual(parsePendingScans("not-json"), []);
+  assert.equal(scanQueueKey("event-1", "lane-1"), "checkin-pod-pending-scans:event-1:lane-1");
+
+  const queue = Array.from({ length: MAX_PENDING_SCANS }, (_, index) => ({
+    code: `QR-${index}`,
+    scannedAt: "2026-08-08T00:00:00.000Z",
+    requestId: `request-${index}`,
+  }));
+  assert.equal(appendPendingScan(queue, valid), false);
+  queue.pop();
+  assert.equal(appendPendingScan(queue, valid), true);
+  assert.equal(queue.length, MAX_PENDING_SCANS);
+});
+
+test("retries transient scan failures with the same idempotency key", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestIds = [];
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    requestIds.push(JSON.parse(init.body).requestId);
+    if (calls < 3) return new Response(JSON.stringify({ error: "shared_state_unavailable" }), { status: 503 });
+    return new Response(JSON.stringify({ kind: "success", at: "2026-08-08T00:00:00.000Z", cursor: 1 }), { status: 200 });
+  };
+  try {
+    const result = await scanSharedEventWithRetry(
+      { eventId: "event-1", laneId: "lane-1", laneName: "入口 A", laneToken: "secret" },
+      "QR-001",
+      "2026-08-08T00:00:00.000Z",
+      "stable-request-id",
+      3,
+      0,
+    );
+    assert.equal(result.kind, "success");
+    assert.equal(calls, 3);
+    assert.deepEqual(requestIds, ["stable-request-id", "stable-request-id", "stable-request-id"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("does not retry a revoked or unauthorized workstation", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+  };
+  try {
+    await assert.rejects(
+      scanSharedEventWithRetry(
+        { eventId: "event-1", laneId: "lane-1", laneName: "入口 A", laneToken: "expired" },
+        "QR-001",
+        undefined,
+        "request-id",
+        3,
+        0,
+      ),
+      (error) => error instanceof SharedApiError && error.code === "unauthorized" && !error.retryable,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("enforces the 10,000 attendee capacity in SQLite itself", () => {

@@ -74,6 +74,9 @@ let resultCounts = { success: 0, duplicate: 0, unknown: 0, failed: 0 };
 let activityCounts = { success: 0, duplicate: 0, unknown: 0, undo: 0 };
 let projectionCount = 0;
 let finalArrived = 0;
+let recoveredRosterCount = 0;
+let recoveredCheckedInCount = 0;
+let laneReportedSuccess = 0;
 
 function check(name, passed, detail) {
   checks.push({ name, passed, detail });
@@ -99,6 +102,27 @@ async function post(body, cookie = adminCookie, measure = false) {
     headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
     body: JSON.stringify(body),
   }, measure);
+}
+
+async function readCompleteRoster(requestedEventId) {
+  const attendees = [];
+  let afterPosition = -1;
+  let hasMore = true;
+  let metadata = null;
+  while (hasMore) {
+    const page = await request(`/api/shared-checkin?${new URLSearchParams({
+      mode: "roster",
+      eventId: requestedEventId,
+      afterPosition: String(afterPosition),
+      limit: "500",
+    })}`, { headers: { cookie: adminCookie } });
+    if (!page.response.ok) throw new Error(`roster read failed (${page.response.status})`);
+    metadata = page.body.event;
+    attendees.push(...page.body.attendees);
+    afterPosition = page.body.nextPosition;
+    hasMore = page.body.hasMore;
+  }
+  return { metadata, attendees };
 }
 
 function attendee(index) {
@@ -139,7 +163,7 @@ function scanBody(lane, code, requestId) {
 async function writeReport(status) {
   const endedAt = new Date();
   const passedChecks = checks.filter((item) => item.passed).length;
-  const totalRequests = Object.values(resultCounts).reduce((sum, count) => sum + count, 0);
+  const totalRequests = scanLatencies.length;
   const throughput = scanWallMs ? totalRequests / (scanWallMs / 1000) : 0;
   const markdown = `# Checkin Pod 多工作站壓力測試報告
 
@@ -169,6 +193,8 @@ async function writeReport(status) {
 | 找不到資料回應 | ${resultCounts.unknown.toLocaleString()} |
 | 失敗/非預期回應 | ${resultCounts.failed.toLocaleString()} |
 | 資料庫最終已報到 | ${finalArrived.toLocaleString()} / ${options.attendees.toLocaleString()} |
+| 伺服器復原名單 | ${recoveredRosterCount.toLocaleString()}（已報到 ${recoveredCheckedInCount.toLocaleString()}） |
+| 工作站統計成功數 | ${laneReportedSuccess.toLocaleString()} |
 | 投影初始星球資料 | ${projectionCount.toLocaleString()} |
 
 ## 防重複與一致性檢查
@@ -266,14 +292,66 @@ try {
     mode: "lane", eventId, laneId: lanes[0].laneId, token: "wrong-token",
   })}`);
   check("錯誤工作站 token 被拒絕", wrongToken.response.status === 401, `HTTP ${wrongToken.response.status}`);
+
+  const initialLaneList = await request(`/api/shared-checkin?${new URLSearchParams({ mode: "lanes", eventId })}`, {
+    headers: { cookie: adminCookie },
+  });
+  check("中控台取得完整工作站列表", initialLaneList.response.ok && initialLaneList.body.lanes?.length === options.clients,
+    `${initialLaneList.body.lanes?.length ?? 0}/${options.clients} 工作站`);
+
+  const renamedLane = lanes[Math.min(1, lanes.length - 1)];
+  const renamed = await post({ action: "rename_lane", eventId, laneId: renamedLane.laneId, laneName: "重新命名入口" });
+  check("工作站可重新命名", renamed.response.ok && renamed.body.laneName === "重新命名入口", `HTTP ${renamed.response.status}`);
+
+  const rotatedLane = lanes[Math.min(2, lanes.length - 1)];
+  const oldRotatedToken = rotatedLane.laneToken;
+  const rotated = await post({ action: "rotate_lane", eventId, laneId: rotatedLane.laneId });
+  if (rotated.response.ok) rotatedLane.laneToken = rotated.body.laneToken;
+  const oldRotatedAccess = await request(`/api/shared-checkin?${new URLSearchParams({
+    mode: "lane", eventId, laneId: rotatedLane.laneId, token: oldRotatedToken,
+  })}`);
+  check("換發工作站連結會立即撤銷舊 token", rotated.response.ok && oldRotatedAccess.response.status === 401,
+    `rotate HTTP ${rotated.response.status} · old token HTTP ${oldRotatedAccess.response.status}`);
+
+  const restartedLane = lanes.at(-1);
+  const revoked = await post({ action: "revoke_lane", eventId, laneId: restartedLane.laneId });
+  const revokedAccess = await request(`/api/shared-checkin?${new URLSearchParams({
+    mode: "lane", eventId, laneId: restartedLane.laneId, token: restartedLane.laneToken,
+  })}`);
+  check("停用工作站會立即拒絕掃描連線", revoked.response.ok && revokedAccess.response.status === 401,
+    `revoke HTTP ${revoked.response.status} · lane HTTP ${revokedAccess.response.status}`);
+  const restarted = await post({ action: "rotate_lane", eventId, laneId: restartedLane.laneId });
+  if (restarted.response.ok) restartedLane.laneToken = restarted.body.laneToken;
+  const restartedAccess = await request(`/api/shared-checkin?${new URLSearchParams({
+    mode: "lane", eventId, laneId: restartedLane.laneId, token: restartedLane.laneToken,
+  })}`);
+  check("停用工作站可換發連結後重新啟用", restarted.response.ok && restartedAccess.response.ok,
+    `rotate HTTP ${restarted.response.status} · lane HTTP ${restartedAccess.response.status}`);
+
+  const summary = await request(`/api/shared-checkin?${new URLSearchParams({ mode: "admin_summary", eventId })}`, {
+    headers: { cookie: adminCookie },
+  });
+  check("本機資料遺失時可發現伺服器活動", summary.response.ok && summary.body.event?.total === options.attendees,
+    `${summary.body.event?.total ?? 0}/${options.attendees} attendees`);
   laneSetupMs = performance.now() - laneStarted;
 
   const normalCount = options.attendees - options.contentionTickets;
   let completed = 0;
   console.log(`[stress] scanning ${normalCount.toLocaleString()} unique tickets with ${options.clients} concurrent clients`);
   const scanStarted = performance.now();
+  const idempotentResults = await Promise.all(Array.from({ length: 3 }, () =>
+    post(scanBody(lanes[0], "STRESS-QR-00000", "idempotent-retry-0"), "", true)));
+  for (const result of idempotentResults) {
+    const kind = result.response.ok ? result.body.kind : "failed";
+    if (kind in resultCounts) resultCounts[kind] += 1;
+    else resultCounts.failed += 1;
+  }
+  check("同一請求重送只保留同一個成功結果", idempotentResults.every((result) =>
+    result.response.ok && result.body.kind === "success" && result.body.cursor === idempotentResults[0].body.cursor),
+  `${idempotentResults.filter((result) => result.body.kind === "success").length}/3 success · cursor ${idempotentResults[0].body.cursor ?? "n/a"}`);
   await Promise.all(lanes.map(async (lane, clientIndex) => {
     for (let index = clientIndex; index < normalCount; index += options.clients) {
+      if (index === 0) continue;
       const serial = String(index).padStart(5, "0");
       const result = await post(scanBody(lane, `STRESS-QR-${serial}`, `unique-${clientIndex}-${index}`), "", true);
       const kind = result.response.ok ? result.body.kind : "failed";
@@ -309,8 +387,8 @@ try {
   }
   scanWallMs = performance.now() - scanStarted;
 
-  check("一般票券全部一次成功", resultCounts.success === options.attendees,
-    `${resultCounts.success.toLocaleString()} / ${options.attendees.toLocaleString()} success`);
+  check("一般票券全部一次成功", resultCounts.success === options.attendees + 2,
+    `${resultCounts.success.toLocaleString()} success responses（含同一成功結果重送 2 次）`);
   check("同票競態每輪只有一台成功", contentionOutcomes.every((outcomes) =>
     outcomes.filter((kind) => kind === "success").length === 1 &&
     outcomes.filter((kind) => kind === "duplicate").length === options.clients - 1),
@@ -334,12 +412,24 @@ try {
   }
   const projection = await request("/api/shared-checkin?mode=projection");
   projectionCount = projection.body.event?.attendees?.length ?? 0;
+  const recoveredRoster = await readCompleteRoster(eventId);
+  recoveredRosterCount = recoveredRoster.attendees.length;
+  recoveredCheckedInCount = recoveredRoster.attendees.filter((item) => item.checkedInAt).length;
+  const finalLaneList = await request(`/api/shared-checkin?${new URLSearchParams({ mode: "lanes", eventId })}`, {
+    headers: { cookie: adminCookie },
+  });
+  laneReportedSuccess = finalLaneList.body.lanes?.reduce((sum, lane) => sum + Number(lane.successCount ?? 0), 0) ?? 0;
   check("資料庫最終人數一致", finalArrived === options.attendees,
     `${finalArrived.toLocaleString()} / ${options.attendees.toLocaleString()} checked in`);
   check("活動紀錄成功數無重複", activityCounts.success === options.attendees,
     `${activityCounts.success.toLocaleString()} success activities`);
   check("競態重複數符合預期", activityCounts.duplicate === options.contentionTickets * (options.clients - 1),
     `${activityCounts.duplicate.toLocaleString()} duplicate activities`);
+  check("伺服器可分頁復原完整名單與報到狀態",
+    recoveredRoster.metadata?.total === options.attendees && recoveredRosterCount === options.attendees && recoveredCheckedInCount === options.attendees,
+    `${recoveredRosterCount.toLocaleString()} roster · ${recoveredCheckedInCount.toLocaleString()} checked in`);
+  check("工作站列表統計加總與成功活動一致", finalLaneList.response.ok && laneReportedSuccess === options.attendees,
+    `${laneReportedSuccess.toLocaleString()} lane successes`);
   check("投影初始資料有完整星球數", projectionCount === options.attendees,
     `${projectionCount.toLocaleString()} planets`);
 } catch (error) {

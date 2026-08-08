@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { hasValidAdminSession, sha256Hex } from "../../admin-auth";
 import type { Attendee, OriginalRow, ProjectionCueType } from "../../checkin-core";
 import { scanKeysFor } from "../../checkin-core";
-import { MAX_SHARED_ATTENDEES, SHARED_CHANGE_PAGE_SIZE } from "../../shared-checkin-policy";
+import { MAX_SHARED_ATTENDEES, MAX_SHARED_LANES, SHARED_CHANGE_PAGE_SIZE } from "../../shared-checkin-policy";
 import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../../shared-checkin-sql";
 import { getD1 } from "../../../db";
 
@@ -17,6 +17,8 @@ type EventRow = {
   cue_id: string | null;
   cue_type: string | null;
   cue_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type AttendeeRow = {
@@ -114,6 +116,32 @@ function eventMetadata(event: EventRow, laneName: string) {
     total: event.total,
     laneName,
   };
+}
+
+async function adminEventMetadata(database: D1Database, event: EventRow) {
+  const cursor = await database.prepare("SELECT COALESCE(MAX(id), 0) AS cursor FROM checkin_activity WHERE event_id = ?")
+    .bind(event.event_id).first<{ cursor: number }>();
+  return {
+    eventId: event.event_id,
+    fileName: event.file_name,
+    importedAt: event.created_at,
+    headers: parseJsonArray(event.headers_json),
+    selectedFields: parseJsonArray(event.selected_fields_json),
+    backgroundColor: event.background_color,
+    total: event.total,
+    cursor: cursor?.cursor ?? 0,
+  };
+}
+
+async function findAdminEvent(database: D1Database, requestedEventId = "") {
+  const selection = `SELECT event_id, file_name, headers_json, selected_fields_json,
+      background_color, total, status, cue_id, cue_type, cue_at, created_at, updated_at
+    FROM checkin_events`;
+  return requestedEventId
+    ? database.prepare(`${selection} WHERE event_id = ? AND status = 'active' LIMIT 1`)
+      .bind(requestedEventId).first<EventRow>()
+    : database.prepare(`${selection} WHERE status = 'active'
+        ORDER BY active DESC, updated_at DESC LIMIT 1`).first<EventRow>();
 }
 
 function safeText(value: unknown, maxLength: number) {
@@ -392,12 +420,57 @@ async function handleCreateLane(request: Request, body: Record<string, unknown>,
   const event = await database.prepare("SELECT 1 AS found FROM checkin_events WHERE event_id = ? AND status = 'active'")
     .bind(eventId).first();
   if (!event) return noStoreJson({ error: "event_not_found" }, { status: 404 });
+  const activeLaneCount = await database.prepare(`SELECT COUNT(*) AS count FROM checkin_lanes
+    WHERE event_id = ? AND revoked_at IS NULL`).bind(eventId).first<{ count: number }>();
+  if ((activeLaneCount?.count ?? 0) >= MAX_SHARED_LANES) {
+    return noStoreJson({ error: "lane_limit_exceeded" }, { status: 409 });
+  }
   const laneId = crypto.randomUUID();
   const laneToken = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
   const tokenHash = await sha256Hex(laneToken);
   await database.prepare(`INSERT INTO checkin_lanes (lane_id, event_id, name, token_hash, created_at)
     VALUES (?, ?, ?, ?, ?)`).bind(laneId, eventId, laneName, tokenHash, new Date().toISOString()).run();
   return noStoreJson({ laneId, laneName, laneToken });
+}
+
+async function handleLaneMutation(request: Request, body: Record<string, unknown>, database: D1Database) {
+  if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
+  const eventId = safeText(body.eventId, 80);
+  const laneId = safeText(body.laneId, 80);
+  if (!eventId || !laneId) return noStoreJson({ error: "invalid_payload" }, { status: 400 });
+  const lane = await database.prepare(`SELECT lane_id, name, revoked_at FROM checkin_lanes
+    WHERE event_id = ? AND lane_id = ? LIMIT 1`)
+    .bind(eventId, laneId).first<{ lane_id: string; name: string; revoked_at: string | null }>();
+  if (!lane) return noStoreJson({ error: "lane_not_found" }, { status: 404 });
+  const now = new Date().toISOString();
+  if (body.action === "revoke_lane") {
+    await database.prepare("UPDATE checkin_lanes SET revoked_at = ? WHERE event_id = ? AND lane_id = ?")
+      .bind(now, eventId, laneId).run();
+    return noStoreJson({ ok: true, revokedAt: now });
+  }
+  if (body.action === "rename_lane") {
+    const laneName = safeText(body.laneName, 80);
+    if (!laneName) return noStoreJson({ error: "invalid_payload" }, { status: 400 });
+    await database.prepare("UPDATE checkin_lanes SET name = ? WHERE event_id = ? AND lane_id = ?")
+      .bind(laneName, eventId, laneId).run();
+    return noStoreJson({ ok: true, laneName });
+  }
+  if (body.action === "rotate_lane") {
+    if (lane.revoked_at) {
+      const activeLaneCount = await database.prepare(`SELECT COUNT(*) AS count FROM checkin_lanes
+        WHERE event_id = ? AND revoked_at IS NULL`).bind(eventId).first<{ count: number }>();
+      if ((activeLaneCount?.count ?? 0) >= MAX_SHARED_LANES) {
+        return noStoreJson({ error: "lane_limit_exceeded" }, { status: 409 });
+      }
+    }
+    const laneToken = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll("-", "");
+    const tokenHash = await sha256Hex(laneToken);
+    await database.prepare(`UPDATE checkin_lanes SET token_hash = ?, revoked_at = NULL,
+      last_seen_at = NULL WHERE event_id = ? AND lane_id = ?`)
+      .bind(tokenHash, eventId, laneId).run();
+    return noStoreJson({ laneId, laneName: lane.name, laneToken });
+  }
+  return noStoreJson({ error: "invalid_payload" }, { status: 400 });
 }
 
 async function handleAdminMutation(request: Request, body: Record<string, unknown>, database: D1Database) {
@@ -450,6 +523,9 @@ export async function POST(request: Request) {
       case "scan": return handleScan(body, database);
       case "set_attendee": return handleSetAttendee(request, body, database);
       case "create_lane": return handleCreateLane(request, body, database);
+      case "revoke_lane":
+      case "rename_lane":
+      case "rotate_lane": return handleLaneMutation(request, body, database);
       case "update_settings":
       case "cue":
       case "delete_event": return handleAdminMutation(request, body, database);
@@ -459,6 +535,62 @@ export async function POST(request: Request) {
     console.error("shared_checkin_post_failed", error);
     return noStoreJson({ error: "shared_state_unavailable" }, { status: 500 });
   }
+}
+
+async function handleLaneListGet(request: Request, url: URL, database: D1Database) {
+  if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
+  const eventId = safeText(url.searchParams.get("eventId"), 80);
+  if (!eventId) return noStoreJson({ error: "invalid_payload" }, { status: 400 });
+  const lanes = await database.prepare(`SELECT l.lane_id, l.name, l.created_at, l.last_seen_at,
+      l.revoked_at, COUNT(CASE WHEN a.outcome = 'success' THEN 1 END) AS success_count
+    FROM checkin_lanes l
+    LEFT JOIN checkin_activity a ON a.event_id = l.event_id AND a.lane_id = l.lane_id
+    WHERE l.event_id = ?
+    GROUP BY l.lane_id, l.name, l.created_at, l.last_seen_at, l.revoked_at
+    ORDER BY (l.revoked_at IS NULL) DESC, l.created_at ASC`)
+    .bind(eventId).all<{
+      lane_id: string; name: string; created_at: string; last_seen_at: string | null;
+      revoked_at: string | null; success_count: number;
+    }>();
+  return noStoreJson({
+    lanes: lanes.results.map((lane) => ({
+      laneId: lane.lane_id,
+      laneName: lane.name,
+      createdAt: lane.created_at,
+      lastSeenAt: lane.last_seen_at,
+      revokedAt: lane.revoked_at,
+      successCount: lane.success_count,
+    })),
+  });
+}
+
+async function handleAdminSummaryGet(request: Request, url: URL, database: D1Database) {
+  if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
+  const event = await findAdminEvent(database, safeText(url.searchParams.get("eventId"), 80));
+  return noStoreJson({ event: event ? await adminEventMetadata(database, event) : null });
+}
+
+async function handleRosterGet(request: Request, url: URL, database: D1Database) {
+  if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
+  const requestedEventId = safeText(url.searchParams.get("eventId"), 80);
+  const event = await findAdminEvent(database, requestedEventId);
+  if (!event) return noStoreJson({ event: null, attendees: [], hasMore: false, nextPosition: -1 });
+  const parsedAfterPosition = Number.parseInt(url.searchParams.get("afterPosition") ?? "-1", 10);
+  const parsedLimit = Number.parseInt(url.searchParams.get("limit") ?? "500", 10);
+  const afterPosition = Number.isFinite(parsedAfterPosition) ? Math.max(-1, parsedAfterPosition) : -1;
+  const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(500, parsedLimit)) : 500;
+  const result = await database.prepare(`SELECT event_id, attendee_id, position, name, email, phone,
+      ticket, approval_status, checked_in_at, checked_in_lane_id, original_json
+    FROM checkin_attendees WHERE event_id = ? AND position > ? ORDER BY position LIMIT ?`)
+    .bind(event.event_id, afterPosition, limit + 1).all<AttendeeRow>();
+  const hasMore = result.results.length > limit;
+  const page = result.results.slice(0, limit);
+  return noStoreJson({
+    event: await adminEventMetadata(database, event),
+    attendees: page.map(attendeeFromRow),
+    hasMore,
+    nextPosition: page.at(-1)?.position ?? afterPosition,
+  });
 }
 
 async function handleLaneGet(url: URL, database: D1Database) {
@@ -563,6 +695,9 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     switch (url.searchParams.get("mode")) {
       case "lane": return handleLaneGet(url, database);
+      case "lanes": return handleLaneListGet(request, url, database);
+      case "admin_summary": return handleAdminSummaryGet(request, url, database);
+      case "roster": return handleRosterGet(request, url, database);
       case "changes": return handleChangesGet(request, url, database);
       case "projection": return handleProjectionGet(url, database);
       default: return noStoreJson({ error: "invalid_payload" }, { status: 400 });

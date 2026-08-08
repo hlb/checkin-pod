@@ -38,6 +38,8 @@ import {
   writeSavedEvent,
 } from "./checkin-core";
 import type { ProjectionCueType } from "./checkin-core";
+import { appendPendingScan, parsePendingScans, scanQueueKey } from "./scan-queue";
+import type { PendingScan } from "./scan-queue";
 import {
   MAX_SHARED_ATTENDEES,
   applySharedChanges,
@@ -45,13 +47,20 @@ import {
   createSharedLane,
   deleteSharedEvent,
   fetchSharedChanges,
+  fetchActiveSharedEventSummary,
+  fetchCompleteSharedRoster,
+  fetchSharedLanes,
   importSharedEvent,
-  scanSharedEvent,
+  renameSharedLane,
+  restoreActiveSharedEvent,
+  revokeSharedLane,
+  rotateSharedLane,
+  scanSharedEventWithRetry,
   sendSharedProjectionCue,
   setSharedAttendeeCheckIn,
   updateSharedSettings,
 } from "./shared-checkin";
-import type { SharedLane } from "./shared-checkin";
+import type { SharedAdminEventMetadata, SharedLane, SharedLaneRecord } from "./shared-checkin";
 
 type ScanResult =
   | { kind: "success"; attendee: Attendee; message: string }
@@ -242,14 +251,36 @@ export default function Home() {
   const [laneName, setLaneName] = useState("");
   const [createdLane, setCreatedLane] = useState<SharedLane | null>(null);
   const [laneBusy, setLaneBusy] = useState(false);
+  const [lanes, setLanes] = useState<SharedLaneRecord[]>([]);
+  const [laneActionId, setLaneActionId] = useState("");
+  const [recoverableEvent, setRecoverableEvent] = useState<SharedAdminEventMetadata | null>(null);
+  const [recovering, setRecovering] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [adminScanQueueSize, setAdminScanQueueSize] = useState(0);
   const scanInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
   const scanBufferRef = useRef("");
   const lastKeyAtRef = useRef(0);
   const scannerIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const adminPendingScansRef = useRef<PendingScan[]>([]);
+  const adminQueueBusyRef = useRef(false);
+  const drainAdminQueueRef = useRef<() => Promise<void>>(async () => undefined);
   const sharedEventId = event?.sharedEvent?.eventId;
+  const sharedLaneId = event?.sharedEvent?.laneId;
   const sharedInitialCursor = event?.sharedEvent?.cursor ?? 0;
+
+  const refreshLanes = useCallback(async () => {
+    if (!sharedEventId) {
+      setLanes([]);
+      return;
+    }
+    try {
+      setLanes(await fetchSharedLanes(sharedEventId));
+    } catch {
+      // Changes polling still verifies connectivity; keep the last good list during a brief outage.
+    }
+  }, [sharedEventId]);
 
   useEffect(() => {
     const load = async () => {
@@ -266,6 +297,7 @@ export default function Home() {
         setEvent(prepared);
         setScanResult(resultFromSavedEvent(prepared));
         setBackgroundImageDataUrl(await readBackgroundImageDataUrl());
+        if (!prepared) setRecoverableEvent(await fetchActiveSharedEventSummary());
       } catch {
         setError("無法讀取瀏覽器中的報到紀錄，請確認不是使用私密瀏覽模式。");
       } finally {
@@ -274,6 +306,16 @@ export default function Home() {
     };
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!sharedEventId) return;
+    const initial = window.setTimeout(() => void refreshLanes(), 0);
+    const timer = window.setInterval(() => void refreshLanes(), 5_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [refreshLanes, sharedEventId]);
 
   useEffect(() => {
     if (!sharedEventId) return;
@@ -342,26 +384,41 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [ready, event]);
 
-  const handleScan = useCallback(
-    async (rawCode: string) => {
+  const persistAdminQueue = useCallback((connection: SavedEvent["sharedEvent"]) => {
+    if (!connection) return;
+    const key = scanQueueKey(connection.eventId, connection.laneId);
+    if (adminPendingScansRef.current.length) {
+      window.localStorage.setItem(key, JSON.stringify(adminPendingScansRef.current));
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  }, []);
+
+  const performScan = useCallback(
+    async (pending: PendingScan) => {
       if (!event) return;
-      const code = rawCode.trim().replace(/[\r\n]+$/g, "");
+      const code = pending.code.trim().replace(/[\r\n]+$/g, "");
       if (!code) return;
-      const scannedAt = new Date().toISOString();
+      const scannedAt = pending.scannedAt;
       setLastInputAt(scannedAt);
       setScanText("");
       try {
-        const committed = await (event.sharedEvent
-          ? (() => {
-              const current = event;
-              return scanSharedEvent(current.sharedEvent!, code, scannedAt).then(async (outcome) => {
-                const next = applySharedScanResult(current, { ...outcome, code });
-                await writeSavedEvent(next);
-                broadcastEventChange();
-                return { event: next, outcome, projectionSync: Promise.resolve(true) };
-              });
-            })()
-          : commitScan(code, scannedAt));
+        const current = await readSavedEvent() ?? event;
+        let committed;
+        if (current.sharedEvent) {
+          const outcome = await scanSharedEventWithRetry(
+            current.sharedEvent,
+            code,
+            scannedAt,
+            pending.requestId,
+          );
+          const next = applySharedScanResult(current, { ...outcome, code });
+          await writeSavedEvent(next);
+          broadcastEventChange();
+          committed = { event: next, outcome, projectionSync: Promise.resolve(true) };
+        } else {
+          committed = await commitScan(code, scannedAt);
+        }
         setEvent(committed.event);
         const attendee = committed.outcome.attendee;
         setScanResult(committed.outcome.kind === "unknown"
@@ -372,18 +429,80 @@ export default function Home() {
         if (!(await committed.projectionSync)) {
           setError("報到紀錄已保存在瀏覽器，但投影牆暫時無法同步。");
         }
-      } catch {
-        setError("無法保存報到紀錄，請立即匯出備份。");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "無法保存報到紀錄，請立即匯出備份。");
+        throw caught;
+      } finally {
+        window.setTimeout(() => scanInputRef.current?.focus(), 0);
       }
-      window.setTimeout(() => scanInputRef.current?.focus(), 0);
     },
     [event],
   );
+
+  const drainAdminQueue = useCallback(async () => {
+    if (adminQueueBusyRef.current || !adminPendingScansRef.current.length) return;
+    adminQueueBusyRef.current = true;
+    try {
+      while (adminPendingScansRef.current.length) {
+        try {
+          await performScan(adminPendingScansRef.current[0]);
+          adminPendingScansRef.current.shift();
+          persistAdminQueue(event?.sharedEvent);
+          setAdminScanQueueSize(adminPendingScansRef.current.length);
+        } catch {
+          break;
+        }
+      }
+    } finally {
+      adminQueueBusyRef.current = false;
+    }
+  }, [event?.sharedEvent, performScan, persistAdminQueue]);
+
+  useEffect(() => {
+    drainAdminQueueRef.current = drainAdminQueue;
+  }, [drainAdminQueue]);
+
+  useEffect(() => {
+    if (!sharedEventId || !sharedLaneId) return;
+    const timer = window.setTimeout(() => {
+      adminPendingScansRef.current = parsePendingScans(
+        window.localStorage.getItem(scanQueueKey(sharedEventId, sharedLaneId)),
+      );
+      setAdminScanQueueSize(adminPendingScansRef.current.length);
+      if (adminPendingScansRef.current.length) void drainAdminQueueRef.current();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [sharedEventId, sharedLaneId]);
+
+  useEffect(() => {
+    const resume = () => void drainAdminQueueRef.current();
+    window.addEventListener("online", resume);
+    return () => window.removeEventListener("online", resume);
+  }, []);
+
+  const handleScan = useCallback((rawCode: string) => {
+    if (!event) return;
+    const code = rawCode.trim().replace(/[\r\n]+$/g, "");
+    if (!code) return;
+    const appended = appendPendingScan(adminPendingScansRef.current, {
+      code,
+      scannedAt: new Date().toISOString(),
+      requestId: crypto.randomUUID(),
+    });
+    if (!appended) {
+      setError("等待送出的掃描已達 100 筆，請先檢查網路連線。");
+      return;
+    }
+    persistAdminQueue(event.sharedEvent);
+    setAdminScanQueueSize(adminPendingScansRef.current.length);
+    void drainAdminQueue();
+  }, [drainAdminQueue, event, persistAdminQueue]);
 
   useEffect(() => {
     if (!event) return;
 
     const isKnownCode = (code: string) => {
+      if (event.sharedEvent) return true;
       const keys = scanKeysFor(code);
       return event.attendees.some((attendee) =>
         attendee.scanKeys.some((key) => keys.includes(key)),
@@ -437,7 +556,7 @@ export default function Home() {
   useEffect(() => {
     if (!event || scanText.trim().length < 3) return;
     const keys = scanKeysFor(scanText);
-    const isKnown = event.attendees.some((attendee) =>
+    const isKnown = Boolean(event.sharedEvent) || event.attendees.some((attendee) =>
       attendee.scanKeys.some((key) => keys.includes(key)),
     );
     if (!isKnown) return;
@@ -557,40 +676,53 @@ export default function Home() {
     window.setTimeout(() => scanInputRef.current?.focus(), 0);
   };
 
-  const exportCsv = () => {
+  const exportCsv = async () => {
     if (!event) return;
-    const statusHeader = event.headers.includes("local_check_in_status")
-      ? "checkin_local_status"
-      : "local_check_in_status";
-    const timeHeader = event.headers.includes("local_checked_in_at")
-      ? "checkin_local_checked_in_at"
-      : "local_checked_in_at";
-    const exportHeaders = [...event.headers, statusHeader, timeHeader];
-    const lines = [
-      exportHeaders.map(csvEscape).join(","),
-      ...event.attendees.map((attendee) =>
-        exportHeaders
-          .map((header) => {
-            if (header === statusHeader) return attendee.checkedInAt ? "checked_in" : "not_checked_in";
-            if (header === timeHeader) return attendee.checkedInAt ?? "";
-            return attendee.original[header] ?? "";
-          })
-          .map(csvEscape)
-          .join(","),
-      ),
-    ];
-    const blob = new Blob(["\uFEFF", lines.join("\r\n")], {
-      type: "text/csv;charset=utf-8",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    const baseName = event.fileName.replace(/\.csv$/i, "") || "luma-guests";
-    link.href = url;
-    link.download = `${baseName}_checkin_${compactDate(new Date())}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-    setShowMenu(false);
-    window.setTimeout(() => scanInputRef.current?.focus(), 0);
+    setExporting(true);
+    let exportEvent = event;
+    try {
+      if (event.sharedEvent) {
+        const restored = await fetchCompleteSharedRoster(event.sharedEvent.eventId);
+        if (!restored.event) throw new Error("伺服器找不到目前活動名單。");
+        exportEvent = { ...event, attendees: restored.attendees };
+      }
+      const statusHeader = exportEvent.headers.includes("local_check_in_status")
+        ? "checkin_local_status"
+        : "local_check_in_status";
+      const timeHeader = exportEvent.headers.includes("local_checked_in_at")
+        ? "checkin_local_checked_in_at"
+        : "local_checked_in_at";
+      const exportHeaders = [...exportEvent.headers, statusHeader, timeHeader];
+      const lines = [
+        exportHeaders.map(csvEscape).join(","),
+        ...exportEvent.attendees.map((attendee) =>
+          exportHeaders
+            .map((header) => {
+              if (header === statusHeader) return attendee.checkedInAt ? "checked_in" : "not_checked_in";
+              if (header === timeHeader) return attendee.checkedInAt ?? "";
+              return attendee.original[header] ?? "";
+            })
+            .map(csvEscape)
+            .join(","),
+        ),
+      ];
+      const blob = new Blob(["\uFEFF", lines.join("\r\n")], {
+        type: "text/csv;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const baseName = exportEvent.fileName.replace(/\.csv$/i, "") || "luma-guests";
+      link.href = url;
+      link.download = `${baseName}_checkin_${compactDate(new Date())}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setShowMenu(false);
+      window.setTimeout(() => scanInputRef.current?.focus(), 0);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法從伺服器匯出最新紀錄。");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const downloadSample = () => {
@@ -765,10 +897,77 @@ export default function Home() {
       const lane = await createSharedLane(event.sharedEvent.eventId, laneName.trim());
       setCreatedLane(lane);
       setLaneName("");
+      await refreshLanes();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "無法建立工作站。");
     } finally {
       setLaneBusy(false);
+    }
+  };
+
+  const restoreEvent = async () => {
+    setRecovering(true);
+    setError("");
+    try {
+      const restored = await restoreActiveSharedEvent();
+      if (!restored) throw new Error("目前沒有可以復原的進行中活動。");
+      const committed = await replaceSavedEvent(restored);
+      setEvent(committed.event);
+      setRecoverableEvent(null);
+      setBackgroundImageDataUrl(null);
+      setScanResult(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法復原活動名單。");
+    } finally {
+      setRecovering(false);
+    }
+  };
+
+  const stopLane = async (lane: SharedLaneRecord) => {
+    if (!event?.sharedEvent || !window.confirm(`確定停用「${lane.laneName}」？這台設備的舊連結會立即失效。`)) return;
+    setLaneActionId(lane.laneId);
+    try {
+      await revokeSharedLane(event.sharedEvent.eventId, lane.laneId);
+      await refreshLanes();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法停用工作站。");
+    } finally {
+      setLaneActionId("");
+    }
+  };
+
+  const editLaneName = async (lane: SharedLaneRecord) => {
+    if (!event?.sharedEvent) return;
+    const nextName = window.prompt("工作站名稱", lane.laneName)?.trim();
+    if (!nextName || nextName === lane.laneName) return;
+    setLaneActionId(lane.laneId);
+    try {
+      await renameSharedLane(event.sharedEvent.eventId, lane.laneId, nextName);
+      if (lane.laneId === event.sharedEvent.laneId) {
+        const next = await mutateSavedEvent((current) => current.sharedEvent
+          ? { ...current, sharedEvent: { ...current.sharedEvent, laneName: nextName } }
+          : current);
+        setEvent(next);
+      }
+      await refreshLanes();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法重新命名工作站。");
+    } finally {
+      setLaneActionId("");
+    }
+  };
+
+  const renewLaneLink = async (lane: SharedLaneRecord) => {
+    if (!event?.sharedEvent || !window.confirm(`重新產生「${lane.laneName}」連結後，舊連結會立即失效。要繼續嗎？`)) return;
+    setLaneActionId(lane.laneId);
+    try {
+      const renewed = await rotateSharedLane(event.sharedEvent.eventId, lane.laneId);
+      setCreatedLane(renewed);
+      await refreshLanes();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法重新產生工作站連結。");
+    } finally {
+      setLaneActionId("");
     }
   };
 
@@ -821,8 +1020,8 @@ export default function Home() {
             <a className="display-button projection-link" href="/projection" target="_blank" rel="noreferrer">
               開啟投影牆 <span aria-hidden="true">↗</span>
             </a>
-            <button className="export-button" type="button" onClick={exportCsv}>
-              <span aria-hidden="true">↓</span> 匯出結果
+            <button className="export-button" type="button" disabled={exporting} onClick={() => void exportCsv()}>
+              <span aria-hidden="true">↓</span> {exporting ? "正在取得最新紀錄…" : "匯出結果"}
             </button>
             <div className="menu-wrap">
               <button
@@ -899,6 +1098,18 @@ export default function Home() {
             <button className="sample-link" type="button" onClick={downloadSample}>
               先下載欄位範例（150 人 ZIP）
             </button>
+            {recoverableEvent ? (
+              <div className="restore-event-card">
+                <div>
+                  <span>找到進行中的活動</span>
+                  <strong>{recoverableEvent.fileName.replace(/\.csv$/i, "")}</strong>
+                  <small>{recoverableEvent.total.toLocaleString()} 位來賓 · 可從共用資料庫完整復原</small>
+                </div>
+                <button type="button" disabled={recovering} onClick={() => void restoreEvent()}>
+                  {recovering ? "復原中…" : "復原活動"}
+                </button>
+              </div>
+            ) : null}
             <div className="privacy-note">
               <span aria-hidden="true">⌂</span>
               <p><strong>名單會安全同步至活動工作站</strong><br />每台設備都能即時防止同一張票重複入場</p>
@@ -983,6 +1194,38 @@ export default function Home() {
                     <a href={createdLane.url} target="_blank" rel="noreferrer">在這台電腦開啟 ↗</a>
                   </div>
                 ) : null}
+                <div className="lane-list">
+                  <div className="lane-list-heading">
+                    <strong>工作站列表</strong>
+                    <span>{lanes.filter((lane) => !lane.revokedAt).length} 個啟用中</span>
+                  </div>
+                  {lanes.map((lane) => {
+                    const isCurrent = lane.laneId === event.sharedEvent?.laneId;
+                    const busy = laneActionId === lane.laneId;
+                    return (
+                      <div className={`lane-list-item ${lane.revokedAt ? "is-revoked" : ""}`} key={lane.laneId}>
+                        <span className="lane-state-dot" aria-hidden="true" />
+                        <div className="lane-list-name">
+                          <strong>{lane.laneName}</strong>
+                          <span>
+                            {isCurrent ? "此裝置 · " : ""}{lane.revokedAt ? "已停用" : lane.lastSeenAt ? `最近使用 ${formatTime(lane.lastSeenAt, true)}` : "尚未連線"}
+                          </span>
+                        </div>
+                        <div className="lane-count"><strong>{lane.successCount.toLocaleString()}</strong><span>成功報到</span></div>
+                        <div className="lane-list-actions">
+                          <button type="button" disabled={busy} onClick={() => void editLaneName(lane)}>改名</button>
+                          <button type="button" disabled={busy || isCurrent} onClick={() => void renewLaneLink(lane)}>
+                            {lane.revokedAt ? "重新啟用" : "換發連結"}
+                          </button>
+                          {!lane.revokedAt ? (
+                            <button type="button" className="danger" disabled={busy || isCurrent} onClick={() => void stopLane(lane)}>停用</button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!lanes.length ? <p className="lane-list-empty">正在讀取工作站…</p> : null}
+                </div>
               </section>
             ) : null}
 
@@ -1057,7 +1300,7 @@ export default function Home() {
               <div className="scan-panel live-panel cockpit-live-panel">
                 <div className="scan-panel-head">
                   <div><span className="live-dot" /><strong>來賓畫面即時同步</strong></div>
-                  <span className="scanner-hint">最近操作 {lastInputAt ? formatTime(lastInputAt) : "—"}</span>
+                  <span className="scanner-hint">{adminScanQueueSize ? `等待處理 ${adminScanQueueSize} 筆 · ` : ""}最近操作 {lastInputAt ? formatTime(lastInputAt) : "—"}</span>
                 </div>
                 <div className={`live-scan-result ${scanResult ? scanResult.kind : "idle"}`} aria-live="polite">
                   {!scanResult ? (
