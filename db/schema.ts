@@ -9,6 +9,7 @@ export const liveEventState = sqliteTable("live_event_state", {
 export const checkinEvents = sqliteTable("checkin_events", {
   eventId: text("event_id").primaryKey(),
   fileName: text("file_name").notNull(),
+  eventName: text("event_name").notNull().default(""),
   headersJson: text("headers_json").notNull(),
   selectedFieldsJson: text("selected_fields_json").notNull(),
   backgroundColor: text("background_color").notNull().default("#0E0F12"),

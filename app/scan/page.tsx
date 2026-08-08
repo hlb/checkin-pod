@@ -317,6 +317,7 @@ export default function ScanPage() {
         setEvent({
           version: 1,
           fileName: metadata.fileName,
+          eventName: metadata.eventName,
           importedAt: metadata.eventId,
           headers: metadata.headers,
           attendees: [],

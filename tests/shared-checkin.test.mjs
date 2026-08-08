@@ -25,6 +25,7 @@ import {
 } from "../app/scan-queue.ts";
 import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../app/shared-checkin-sql.ts";
 import {
+  defaultEventName,
   eventDeletionConfirmation,
   isEventDeletionConfirmed,
 } from "../app/shared-checkin-policy.ts";
@@ -69,6 +70,12 @@ test("requires the exact event-specific confirmation string for permanent deleti
   assert.equal(isEventDeletionConfirmed("event-1", confirmation), true);
   assert.equal(isEventDeletionConfirmed("event-1", ""), false);
   assert.equal(isEventDeletionConfirmed("event-1", eventDeletionConfirmation("event-2")), false);
+});
+
+test("derives the default event name from the CSV file name", () => {
+  assert.equal(defaultEventName("luma-sample-10000.csv"), "luma-sample-10000");
+  assert.equal(defaultEventName("活動名單.CSV"), "活動名單");
+  assert.equal(defaultEventName(".csv"), "未命名活動");
 });
 
 test("detects single-device check-in differences before server sync", () => {
@@ -394,12 +401,13 @@ test("a direct scan response cannot skip unseen activity from another client", (
 });
 
 test("generated migration is executable and retains query optimization", async () => {
-  const [initialMigration, modeMigration] = await Promise.all([
+  const [initialMigration, modeMigration, eventNameMigration] = await Promise.all([
     readFile(new URL("../drizzle/0001_volatile_tigra.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0002_chilly_the_spike.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0003_lying_orphan.sql", import.meta.url), "utf8"),
   ]);
   const database = new DatabaseSync(":memory:");
-  for (const statement of `${initialMigration}\n--> statement-breakpoint\n${modeMigration}`.split("--> statement-breakpoint").map((item) => item.trim()).filter(Boolean)) {
+  for (const statement of `${initialMigration}\n--> statement-breakpoint\n${modeMigration}\n--> statement-breakpoint\n${eventNameMigration}`.split("--> statement-breakpoint").map((item) => item.trim()).filter(Boolean)) {
     database.exec(statement);
   }
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name);
@@ -410,6 +418,10 @@ test("generated migration is executable and retains query optimization", async (
   assert.ok(tables.includes("checkin_activity"));
   assert.match(initialMigration, /PRAGMA optimize/);
   assert.match(modeMigration, /ADD `sync_mode`/);
+  assert.match(eventNameMigration, /ADD `event_name`/);
+  const eventColumns = database.prepare("PRAGMA table_info(checkin_events)").all().map((row) => row.name);
+  assert.ok(eventColumns.includes("sync_mode"));
+  assert.ok(eventColumns.includes("event_name"));
   assert.equal(database.prepare("SELECT sync_mode FROM checkin_events LIMIT 1").get(), undefined);
   database.close();
 });

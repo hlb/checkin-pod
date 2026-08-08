@@ -6,6 +6,7 @@ import {
   MAX_SHARED_ATTENDEES,
   MAX_SHARED_LANES,
   SHARED_CHANGE_PAGE_SIZE,
+  defaultEventName,
   isEventDeletionConfirmed,
 } from "../../shared-checkin-policy";
 import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../../shared-checkin-sql";
@@ -14,6 +15,7 @@ import { getD1 } from "../../../db";
 type EventRow = {
   event_id: string;
   file_name: string;
+  event_name: string;
   headers_json: string;
   selected_fields_json: string;
   background_color: string;
@@ -116,6 +118,7 @@ function eventMetadata(event: EventRow, laneName: string) {
   return {
     eventId: event.event_id,
     fileName: event.file_name,
+    eventName: event.event_name || defaultEventName(event.file_name),
     headers: parseJsonArray(event.headers_json),
     selectedFields: parseJsonArray(event.selected_fields_json),
     backgroundColor: event.background_color,
@@ -130,6 +133,7 @@ async function adminEventMetadata(database: D1Database, event: EventRow) {
   return {
     eventId: event.event_id,
     fileName: event.file_name,
+    eventName: event.event_name || defaultEventName(event.file_name),
     importedAt: event.created_at,
     headers: parseJsonArray(event.headers_json),
     selectedFields: parseJsonArray(event.selected_fields_json),
@@ -141,7 +145,7 @@ async function adminEventMetadata(database: D1Database, event: EventRow) {
 }
 
 async function findAdminEvent(database: D1Database, requestedEventId = "") {
-  const selection = `SELECT event_id, file_name, headers_json, selected_fields_json,
+  const selection = `SELECT event_id, file_name, event_name, headers_json, selected_fields_json,
       background_color, sync_mode, total, status, cue_id, cue_type, cue_at, created_at, updated_at
     FROM checkin_events`;
   return requestedEventId
@@ -175,7 +179,7 @@ async function laneForRequest(
 ) {
   if (!eventId || !laneId || !laneToken) return null;
   const tokenHash = await sha256Hex(laneToken);
-  return database.prepare(`SELECT l.lane_id, l.name, e.event_id, e.file_name, e.headers_json,
+  return database.prepare(`SELECT l.lane_id, l.name, e.event_id, e.file_name, e.event_name, e.headers_json,
       e.selected_fields_json, e.background_color, e.sync_mode, e.total, e.status,
       e.cue_id, e.cue_type, e.cue_at
     FROM checkin_lanes l
@@ -237,6 +241,7 @@ async function scanResponse(database: D1Database, eventId: string, activity: Act
 async function handleBeginImport(request: Request, body: Record<string, unknown>, database: D1Database) {
   if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
   const fileName = safeText(body.fileName, 240);
+  const eventName = safeText(body.eventName, 240) || defaultEventName(fileName);
   const headers = validStringArray(body.headers, 250, 240);
   const selectedFields = validStringArray(body.selectedFields, 30, 240) ?? [];
   const expectedTotal = Number(body.expectedTotal);
@@ -260,10 +265,10 @@ async function handleBeginImport(request: Request, body: Record<string, unknown>
   const now = new Date().toISOString();
   await database.batch([
     database.prepare(`INSERT INTO checkin_events
-        (event_id, file_name, headers_json, selected_fields_json, background_color,
+        (event_id, file_name, event_name, headers_json, selected_fields_json, background_color,
           sync_mode, total, status, active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'importing', 0, ?, ?)`)
-      .bind(eventId, fileName, JSON.stringify(headers), JSON.stringify(selectedFields),
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'importing', 0, ?, ?)`)
+      .bind(eventId, fileName, eventName, JSON.stringify(headers), JSON.stringify(selectedFields),
         backgroundColor, syncMode, expectedTotal, now, now),
     database.prepare(`INSERT INTO checkin_lanes
         (lane_id, event_id, name, token_hash, created_at)
@@ -578,6 +583,14 @@ async function handleAdminMutation(request: Request, body: Record<string, unknow
       .bind(new Date().toISOString(), eventId).run();
     return noStoreJson({ ok: true });
   }
+  if (body.action === "rename_event") {
+    const eventName = safeText(body.eventName, 240);
+    if (!eventName) return noStoreJson({ error: "invalid_payload" }, { status: 400 });
+    const result = await database.prepare("UPDATE checkin_events SET event_name = ?, updated_at = ? WHERE event_id = ? AND status = 'active'")
+      .bind(eventName, new Date().toISOString(), eventId).run();
+    if (!result.meta.changes) return noStoreJson({ error: "event_not_found" }, { status: 404 });
+    return noStoreJson({ ok: true, eventName });
+  }
   if (body.action === "delete_event") {
     const confirmation = safeText(body.confirmation, 160);
     if (!isEventDeletionConfirmed(eventId, confirmation)) {
@@ -613,6 +626,7 @@ export async function POST(request: Request) {
       case "cue":
       case "activate_event":
       case "deactivate_event":
+      case "rename_event":
       case "delete_event": return handleAdminMutation(request, body, database);
       default: return noStoreJson({ error: "invalid_payload" }, { status: 400 });
     }
@@ -657,22 +671,23 @@ async function handleAdminSummaryGet(request: Request, url: URL, database: D1Dat
 
 async function handleEventHistoryGet(request: Request, database: D1Database) {
   if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
-  const result = await database.prepare(`SELECT e.event_id, e.file_name, e.sync_mode, e.total,
+  const result = await database.prepare(`SELECT e.event_id, e.file_name, e.event_name, e.sync_mode, e.total,
       e.active, e.created_at, e.updated_at,
       COALESCE(SUM(CASE WHEN a.checked_in_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS arrived
     FROM checkin_events e
     LEFT JOIN checkin_attendees a ON a.event_id = e.event_id
     WHERE e.status = 'active'
-    GROUP BY e.event_id, e.file_name, e.sync_mode, e.total, e.active, e.created_at, e.updated_at
+    GROUP BY e.event_id, e.file_name, e.event_name, e.sync_mode, e.total, e.active, e.created_at, e.updated_at
     ORDER BY e.active DESC, e.created_at DESC
     LIMIT 100`).all<{
-      event_id: string; file_name: string; sync_mode: "single" | "multi"; total: number;
+      event_id: string; file_name: string; event_name: string; sync_mode: "single" | "multi"; total: number;
       active: number; created_at: string; updated_at: string; arrived: number;
     }>();
   return noStoreJson({
     events: result.results.map((event) => ({
       eventId: event.event_id,
       fileName: event.file_name,
+      eventName: event.event_name || defaultEventName(event.file_name),
       syncMode: event.sync_mode,
       total: event.total,
       arrived: event.arrived,
@@ -722,13 +737,6 @@ async function handleChangesGet(request: Request, url: URL, database: D1Database
   if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
   const eventId = safeText(url.searchParams.get("eventId"), 80);
   const after = Math.max(0, Number.parseInt(url.searchParams.get("after") ?? "0", 10) || 0);
-  const now = new Date().toISOString();
-  await database.batch([
-    database.prepare("UPDATE checkin_events SET active = 0, updated_at = ? WHERE active = 1 AND event_id <> ?")
-      .bind(now, eventId),
-    database.prepare("UPDATE checkin_events SET active = 1, updated_at = ? WHERE event_id = ? AND status = 'active'")
-      .bind(now, eventId),
-  ]);
   const result = await database.prepare(`SELECT a.id, a.attendee_id, a.outcome, a.checked_in_at,
       a.occurred_at, l.name AS lane_name
     FROM checkin_activity a LEFT JOIN checkin_lanes l ON l.lane_id = a.lane_id
@@ -756,7 +764,7 @@ async function handleChangesGet(request: Request, url: URL, database: D1Database
 async function handleProjectionGet(url: URL, database: D1Database) {
   const afterValue = url.searchParams.get("after");
   const after = Math.max(0, Number.parseInt(afterValue ?? "0", 10) || 0);
-  const event = await database.prepare(`SELECT event_id, file_name, headers_json,
+  const event = await database.prepare(`SELECT event_id, file_name, event_name, headers_json,
       selected_fields_json, background_color, sync_mode, total, status, cue_id, cue_type, cue_at
     FROM checkin_events WHERE active = 1 AND status = 'active' ORDER BY updated_at DESC LIMIT 1`)
     .first<EventRow>();
@@ -773,6 +781,7 @@ async function handleProjectionGet(url: URL, database: D1Database) {
     return noStoreJson({
       event: {
         eventId: event.event_id, fileName: event.file_name, total: event.total,
+        eventName: event.event_name || defaultEventName(event.file_name),
         cursor: cursorRow?.cursor ?? 0, cue,
         attendees: attendees.results.map((row) => ({ id: row.attendee_id, name: row.name, checkedInAt: row.checked_in_at })),
       },
@@ -791,6 +800,7 @@ async function handleProjectionGet(url: URL, database: D1Database) {
   return noStoreJson({
     event: {
       eventId: event.event_id, fileName: event.file_name, total: event.total,
+      eventName: event.event_name || defaultEventName(event.file_name),
       cursor: page.at(-1)?.id ?? Math.max(after, cursorRow?.cursor ?? 0),
       hasMore, cue,
       changes: page.map((row) => ({

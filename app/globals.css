@@ -303,7 +303,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 }
 .dashboard-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 32px; position: relative; z-index: 1; }
 .dashboard-heading .eyebrow { color: #ff946a; margin-bottom: 13px; }
+.event-title-line { display: flex; align-items: center; gap: 12px; }
 .dashboard-heading h1 { margin: 0; font-family: Georgia, "Noto Serif TC", serif; font-size: clamp(34px, 4vw, 52px); letter-spacing: -.035em; }
+.event-title-line button { min-height: 34px; padding: 0 11px; flex: 0 0 auto; color: #d9e7dc; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.2); border-radius: 8px; font-size: 9px; font-weight: 850; }
+.event-title-line button:disabled { opacity: .5; }
 .file-meta { margin: 12px 0 0; color: #aebfb4; font-size: 12px; }
 .progress-ring {
   --rate: 0deg;
@@ -592,6 +595,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .event-history-actions { display: flex; align-items: center; gap: 7px; }
 .event-history-actions button { min-width: 76px; min-height: 38px; padding: 0 12px; color: #fff; background: var(--forest); border: 1px solid var(--forest); border-radius: 9px; font-size: 10px; font-weight: 850; }
 .event-history-actions button:disabled { color: #6c776f; background: #e5e8e2; border-color: #d7dbd4; }
+.event-history-actions .history-rename-button { min-width: 60px; color: #536359; background: #fff; border-color: #cfd5cd; }
 .event-history-actions .history-delete-button { min-width: 60px; color: #aa3c2d; background: #fff9f6; border-color: #e7b5aa; }
 .event-history-actions .history-delete-button:disabled { color: #a89089; background: #f1ece9; border-color: #ded5d1; }
 .event-history-empty { min-height: 120px; display: grid; place-content: center; justify-items: center; gap: 6px; color: #8a918a; text-align: center; }
@@ -896,6 +900,7 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .event-dashboard { padding: 42px 16px 54px; }
   .dashboard-heading { align-items: flex-start; flex-direction: column; }
   .dashboard-heading h1 { font-size: 35px; }
+  .event-title-line { align-items: flex-start; flex-direction: column; }
   .progress-ring { width: 84px; height: 84px; flex-basis: 84px; }
   .progress-ring strong { font-size: 19px; }
   .control-status { align-self: flex-start; }

@@ -13,6 +13,7 @@ import {
   MAX_SHARED_LANES,
   assertSharedCapacity,
   chunkItems,
+  defaultEventName,
 } from "./shared-checkin-policy.ts";
 export {
   MAX_SHARED_ATTENDEES,
@@ -21,6 +22,7 @@ export {
   SHARED_IMPORT_CHUNK_SIZE,
   assertSharedCapacity,
   chunkItems,
+  defaultEventName,
   eventDeletionConfirmation,
 } from "./shared-checkin-policy.ts";
 
@@ -37,6 +39,7 @@ export type SharedLaneSession = Pick<SharedEventConnection, "eventId" | "laneId"
 export type SharedEventMetadata = {
   eventId: string;
   fileName: string;
+  eventName: string;
   headers: string[];
   selectedFields: string[];
   backgroundColor: string;
@@ -81,6 +84,7 @@ export type SharedLaneRecord = {
 export type SharedAdminEventMetadata = {
   eventId: string;
   fileName: string;
+  eventName: string;
   importedAt: string;
   headers: string[];
   selectedFields: string[];
@@ -93,6 +97,7 @@ export type SharedAdminEventMetadata = {
 export type SharedEventHistoryItem = {
   eventId: string;
   fileName: string;
+  eventName: string;
   importedAt: string;
   updatedAt: string;
   total: number;
@@ -172,6 +177,7 @@ export async function importSharedEvent(
     body: JSON.stringify({
       action: "begin_import",
       fileName: event.fileName,
+      eventName: event.eventName ?? defaultEventName(event.fileName),
       headers: event.headers,
       selectedFields: event.displaySettings?.selectedFields ?? [],
       backgroundColor: event.displaySettings?.backgroundColor ?? "#0E0F12",
@@ -456,6 +462,14 @@ export async function setSharedEventActive(eventId: string, active: boolean) {
   });
 }
 
+export async function renameSharedEvent(eventId: string, eventName: string) {
+  return apiJson<{ ok: true; eventName: string }>("/api/shared-checkin", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "rename_event", eventId, eventName }),
+  });
+}
+
 export async function fetchSharedRosterPage(eventId = "", afterPosition = -1) {
   const query = new URLSearchParams({ mode: "roster", afterPosition: String(afterPosition), limit: "500" });
   if (eventId) query.set("eventId", eventId);
@@ -495,6 +509,7 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
     return {
       version: 1,
       fileName: restored.event.fileName,
+      eventName: restored.event.eventName,
       importedAt: restored.event.importedAt,
       headers: restored.event.headers,
       attendees,
@@ -518,6 +533,7 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
   return {
     version: 1,
     fileName: restored.event.fileName,
+    eventName: restored.event.eventName,
     importedAt: restored.event.importedAt,
     headers: restored.event.headers,
     attendees: restored.attendees,

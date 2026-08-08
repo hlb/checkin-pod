@@ -45,6 +45,7 @@ import {
   applySharedScanResult,
   checkInStateSignature,
   createSharedLane,
+  defaultEventName,
   deleteSharedEvent,
   diffSingleCheckInState,
   eventDeletionConfirmation,
@@ -55,6 +56,7 @@ import {
   fetchSharedLanes,
   importSharedEvent,
   renameSharedLane,
+  renameSharedEvent,
   restoreSharedEvent,
   revokeSharedLane,
   rotateSharedLane,
@@ -793,6 +795,7 @@ export default function Home() {
         const nextEvent: SavedEvent = {
           version: 1,
           fileName: file.name,
+          eventName: defaultEventName(file.name),
           importedAt,
           headers,
           attendees,
@@ -1164,6 +1167,30 @@ export default function Home() {
     }
   };
 
+  const editEventName = async (eventId: string, currentName: string) => {
+    const entered = window.prompt("輸入活動名稱", currentName);
+    const eventName = entered?.trim();
+    if (!eventName || eventName === currentName) return;
+    setHistoryActionId(eventId);
+    setError("");
+    try {
+      const renamed = await renameSharedEvent(eventId, eventName);
+      setEventHistory((history) => history.map((item) =>
+        item.eventId === eventId ? { ...item, eventName: renamed.eventName } : item));
+      setRecoverableEvent((current) => current?.eventId === eventId
+        ? { ...current, eventName: renamed.eventName }
+        : current);
+      if (eventId === currentServerEventId) {
+        const next = await mutateSavedEvent((current) => ({ ...current, eventName: renamed.eventName }));
+        setEvent(next);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法更新活動名稱。");
+    } finally {
+      setHistoryActionId("");
+    }
+  };
+
   const openDeleteDialog = (historyEvent: SharedEventHistoryItem) => {
     setDeleteCandidate(historyEvent);
     setDeletionInput("");
@@ -1435,7 +1462,7 @@ export default function Home() {
               <div className="restore-event-card">
                 <div>
                   <span>找到進行中的活動</span>
-                  <strong>{recoverableEvent.fileName.replace(/\.csv$/i, "")}</strong>
+                  <strong>{recoverableEvent.eventName || defaultEventName(recoverableEvent.fileName)}</strong>
                   <small>{recoverableEvent.total.toLocaleString()} 位來賓 · {recoverableEvent.syncMode === "single" ? "單機備份" : "多機活動"}可完整復原</small>
                 </div>
                 <button type="button" disabled={recovering} onClick={() => void restoreEvent()}>
@@ -1459,7 +1486,18 @@ export default function Home() {
             <div className="dashboard-heading">
               <div>
                 <p className="eyebrow"><span /> Live operations</p>
-                <h1>活動中控台</h1>
+                <div className="event-title-line">
+                  <h1>{event.eventName ?? defaultEventName(event.fileName)}</h1>
+                  {currentServerEventId ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(historyActionId)}
+                      onClick={() => void editEventName(currentServerEventId, event.eventName ?? defaultEventName(event.fileName))}
+                    >
+                      改活動名稱
+                    </button>
+                  ) : null}
+                </div>
                 <p className="file-meta">
                   {event.fileName} · {total} 位可報到
                   {event.excludedRowCount ? ` · 已略過 ${event.excludedRowCount} 筆不可報到資料` : ""}
@@ -1899,16 +1937,24 @@ export default function Home() {
                     {isCurrent ? <span className="current-event-badge">目前裝置</span> : null}
                     {historyEvent.active ? <span className="active-event-badge">投影中</span> : null}
                   </div>
-                  <strong>{historyEvent.fileName.replace(/\.csv$/i, "")}</strong>
-                  <small>{formatEventDate(historyEvent.importedAt)} · {historyEvent.syncMode === "single" ? "單機" : "多機"}</small>
+                  <strong>{historyEvent.eventName}</strong>
+                  <small>{historyEvent.fileName} · {formatEventDate(historyEvent.importedAt)} · {historyEvent.syncMode === "single" ? "單機" : "多機"}</small>
                 </div>
                 <div className="event-history-progress">
                   <div><span>報到進度</span><strong>{historyEvent.arrived.toLocaleString()} / {historyEvent.total.toLocaleString()}</strong></div>
-                  <div className="history-progress-track" role="progressbar" aria-label={`${historyEvent.fileName} 報到進度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+                  <div className="history-progress-track" role="progressbar" aria-label={`${historyEvent.eventName} 報到進度`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
                     <i style={{ width: `${progress}%` }} />
                   </div>
                 </div>
                 <div className="event-history-actions">
+                  <button
+                    className="history-rename-button"
+                    type="button"
+                    disabled={Boolean(historyActionId)}
+                    onClick={() => void editEventName(historyEvent.eventId, historyEvent.eventName)}
+                  >
+                    改名
+                  </button>
                   <button
                     type="button"
                     disabled={isCurrent || Boolean(historyActionId)}
@@ -1954,7 +2000,7 @@ export default function Home() {
             <p className="section-kicker">Permanent deletion</p>
             <h2 id="event-delete-title">永久刪除活動</h2>
             <p id="event-delete-description">
-              「{deleteCandidate.fileName.replace(/\.csv$/i, "")}」的名單、報到紀錄與工作站連結會從伺服器永久刪除。
+              「{deleteCandidate.eventName}」的名單、報到紀錄與工作站連結會從伺服器永久刪除。
             </p>
             {deleteCandidate.eventId === currentServerEventId ? <p className="event-delete-current-note">這是目前裝置使用的活動。本機名單也會一併清除。</p> : null}
             <label className="event-delete-confirmation">

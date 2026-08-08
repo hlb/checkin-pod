@@ -39,6 +39,7 @@ export type SingleSyncState = {
 export type SavedEvent = {
   version: 1;
   fileName: string;
+  eventName?: string;
   importedAt: string;
   headers: string[];
   attendees: Attendee[];

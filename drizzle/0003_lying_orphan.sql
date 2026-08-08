@@ -1,0 +1,1 @@
+ALTER TABLE `checkin_events` ADD `event_name` text DEFAULT '' NOT NULL;

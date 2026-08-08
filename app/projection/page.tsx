@@ -18,6 +18,7 @@ type Entrance = { key: string; attendee: LiveAttendee };
 type SharedProjectionEvent = {
   eventId: string;
   fileName: string;
+  eventName: string;
   total: number;
   cursor: number;
   hasMore?: boolean;
@@ -335,7 +336,7 @@ export default function ProjectionPage() {
             sharedCursorRef.current = sharedEvent.cursor;
             applySnapshot({
               eventId: sharedEvent.eventId,
-              fileName: sharedEvent.fileName,
+              fileName: sharedEvent.eventName,
               total: sharedEvent.total,
               revision: sharedEvent.cursor,
               updatedAt: new Date().toISOString(),
@@ -353,6 +354,7 @@ export default function ProjectionPage() {
             sharedCursorRef.current = sharedEvent.cursor;
             applySnapshot({
               ...snapshotRef.current,
+              fileName: sharedEvent.eventName,
               total: sharedEvent.total,
               revision: sharedEvent.cursor,
               updatedAt: new Date().toISOString(),

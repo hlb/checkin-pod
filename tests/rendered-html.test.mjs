@@ -161,6 +161,8 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(page, /立即同步/);
   assert.match(page, /活動歷史/);
   assert.match(page, /載入活動/);
+  assert.match(page, /改活動名稱/);
+  assert.match(page, /renameSharedEvent/);
   assert.match(page, /fetchSharedEventHistory/);
   assert.match(page, /永久刪除活動/);
   assert.match(page, /onPaste/);
@@ -200,6 +202,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(projectionPage, /activeEntrance \? \(\(\) =>/);
   assert.match(projectionPage, /energy-planet-canvas/);
   assert.match(projectionPage, /drawSettledPlanet/);
+  assert.match(projectionPage, /sharedEvent\.eventName/);
   assert.match(projectionPage, /type-\$\{appearance\.type\}/);
   assert.match(planetVariants, /PLANET_PALETTES/);
   assert.match(planetVariants, /PLANET_TYPES/);
@@ -213,11 +216,19 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(sharedRoute, /sync_mode/);
   assert.match(sharedRoute, /case "events"/);
   assert.match(sharedRoute, /activate_event/);
+  assert.match(sharedRoute, /rename_event/);
+  assert.match(sharedRoute, /event_name/);
   assert.match(sharedRoute, /deactivate_event/);
   assert.match(sharedRoute, /deletion_confirmation_mismatch/);
   assert.match(sharedRoute, /isEventDeletionConfirmed/);
   assert.match(sharedSql, /checked_in_at IS NULL/);
   assert.match(sharedSql, /CHECK\(total >= 0 AND total <= 10000\)/);
+  assert.match(sharedSql, /event_name/);
+  const changesHandler = sharedRoute.slice(
+    sharedRoute.indexOf("async function handleChangesGet"),
+    sharedRoute.indexOf("async function handleProjectionGet"),
+  );
+  assert.doesNotMatch(changesHandler, /SET active/);
   assert.match(policy, /input\.total > 200/);
   assert.match(policy, /isStaleLiveEventSnapshot/);
   assert.match(auth, /HttpOnly/);

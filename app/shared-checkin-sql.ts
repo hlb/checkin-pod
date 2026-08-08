@@ -2,6 +2,7 @@ export const SHARED_SCHEMA_SQL = [
   `CREATE TABLE IF NOT EXISTS checkin_events (
     event_id TEXT PRIMARY KEY,
     file_name TEXT NOT NULL,
+    event_name TEXT NOT NULL DEFAULT '',
     headers_json TEXT NOT NULL,
     selected_fields_json TEXT NOT NULL,
     background_color TEXT NOT NULL DEFAULT '#0E0F12',
