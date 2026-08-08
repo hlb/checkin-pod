@@ -4,7 +4,7 @@ Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位�
 
 ![Checkin Pod 活動報到輔助機](docs/assets/checkin-pod-event-check-in-assistant.webp)
 
-> 專案狀態：開源準備中。Security Review 的程式修正已完成。公開 repository 前仍需確認 Git history 沒有活動資料或秘密，並加入維護者選定的 `LICENSE`。
+> 專案狀態：開源準備中。Security Review 的程式修正已完成。專案採用 Apache License 2.0。公開 repository 前仍需確認 Git history 沒有活動資料或秘密。
 
 ## 主要功能
 
@@ -208,4 +208,4 @@ reset 會永久刪除活動、參加者、QR scan keys、工作站、報到紀�
 
 ## 授權
 
-專案尚未選擇開源授權。加入 `LICENSE` 前，原始碼保留所有權利。維護者需要在公開 repository 前選擇並加入授權條款，例如 MIT 或 Apache-2.0。
+本專案採用 [Apache License 2.0](LICENSE)。此授權允許商業使用、修改與散布，並提供明確的專利授權。散布時需要保留授權與著作權標示，修改過的檔案需要標示變更。第三方素材與相依套件依各自的授權條款使用。

@@ -15,7 +15,7 @@
 
 production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `image-size` 的兩份 High advisory。上游目前沒有 patched release；產品不需要的 HEIF、ICNS、JXL 與 JXL stream parser 已全域停用並加入惡意 ICNS 防回歸測試。此項狀態為 Mitigated。
 
-程式修正完成後，公開 repository 前仍需由維護者完成三件事：選擇 `LICENSE`、確認工作樹與 Git history 沒有真實活動資料、使用完整 history secret scanner 再驗證一次。這些操作不會由應用程式碼自動完成。
+程式修正完成後，專案已採用 Apache License 2.0。公開 repository 前仍需由維護者確認工作樹與 Git history 沒有真實活動資料，並使用完整 history secret scanner 再驗證一次。這些操作不會由應用程式碼自動完成。
 
 ## 2. 範圍與方法
 
@@ -227,7 +227,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 
 ### 維護者公開前操作
 
-- [ ] 選擇並加入 `LICENSE`。
+- [x] 採用 Apache License 2.0 並加入 `LICENSE`。
 - [ ] 確認 repository 工作樹中的所有 CSV、QR 圖、匯出檔與 ZIP 都是合成資料；真實活動檔移到 repository 外。
 - [ ] 使用 gitleaks 或同級工具掃描完整 Git history，並啟用 GitHub secret scanning 與 push protection。
 - [ ] 確認 `SECURITY.md` 的 GitHub Private Vulnerability Reporting URL 在公開 repository 可用。
