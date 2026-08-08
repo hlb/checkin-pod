@@ -2,7 +2,7 @@
 
 文件版本：2026-08-08
 
-對應程式版本：Security Review remediation working tree
+對應程式版本：`main`
 狀態：現況文件
 
 ## 1. 系統目的
@@ -244,4 +244,4 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 - 管理員支援具名帳號與 audit，沒有內建 MFA、角色或外部 IdP。正式多團隊部署建議在站點前方加入 Cloudflare Access。
 - Web Serial 尚未實作。USB 掃描器使用鍵盤模式。
 
-完整 finding 狀態、驗證與 release gate 請看 [Security Review](security-review.md)。
+漏洞通報流程請看 [SECURITY.md](../SECURITY.md)。

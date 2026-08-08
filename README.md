@@ -4,8 +4,6 @@ Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位�
 
 ![Checkin Pod 活動報到輔助機](docs/assets/checkin-pod-event-check-in-assistant.webp)
 
-> 專案狀態：開源準備中。Security Review 的程式修正已完成。專案採用 Apache License 2.0。公開 repository 前仍需確認 Git history 沒有活動資料或秘密。
-
 ## 主要功能
 
 - 匯入 Luma 與 KKTIX CSV 名單。
@@ -18,8 +16,6 @@ Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位�
 - 提供活動歷史、活動改名、活動還原與永久刪除。
 - 提供即時投影畫面與現場控制指令。
 - 匯出保留原始欄位的報到結果 CSV。
-- 提供 150 人與 10,000 人測試資料。
-- 提供 10,000 人、50 工作站壓力測試腳本與報告。
 
 ## 畫面與權限
 
@@ -125,8 +121,6 @@ CSV 匯出會中和 `=`、`+`、`-`、`@` 與控制字元開頭的試算表公�
 npm run sample:generate
 ```
 
-所有提交至 repository 的 CSV 與 QR 圖都必須使用合成資料。活動主辦單位的真實名單不得提交至 Git。
-
 ## 現場操作
 
 1. 匯入 CSV，選擇單機或多機模式。
@@ -149,7 +143,7 @@ localhost 環境的投影電腦可以使用報到電腦的區網 IP，例如 `ht
 - 每場活動預設保留 30 天。請求處理與每日排程會刪除到期活動及其關聯資料。
 - 永久刪除活動會串聯刪除該活動的參加者、掃描鍵、工作站與活動紀錄。
 
-部署單位需要建立資料保存期限、隱私告知與刪除流程。詳細風險與建議請看 [Security Review](docs/security-review.md)。
+使用單位需要建立資料保存期限、隱私告知與刪除流程。
 
 ## 驗證
 
@@ -182,31 +176,12 @@ npm run stress
 | `npm run stress` | 執行多工作站壓力測試 |
 | `npm run sample:generate` | 重新產生合成範例資料 |
 
-## 部署
-
-目前 repository 使用 `.openai/hosting.json` 定義 Sites 專案與 D1 binding。`worker/index.ts` 是 Cloudflare Worker 入口。部署環境需要提供：
-
-- `ADMIN_USERNAME` 與 `ADMIN_PASSWORD`，或 `ADMIN_USERS_JSON`
-- 至少 32 個字元的獨立 `SESSION_SECRET`
-- 名稱為 `DB` 的 D1 binding
-- `LOGIN_RATE_LIMITER`、`SCAN_RATE_LIMITER`、`SCAN_IP_RATE_LIMITER`、`UNKNOWN_SCAN_RATE_LIMITER` 與 `UNKNOWN_SCAN_IP_RATE_LIMITER` bindings
-- 靜態資產 binding
-- HTTPS
-
-production config 已定義每天 `03:17 UTC` 的資料保存排程。本次安全版本採清空重建策略，不保留舊活動資料。Sites 部署會執行 `drizzle/0007_reset_production.sql`，依外鍵順序刪除舊資料表並立即建立目前 schema。
-
-```bash
-npx wrangler d1 execute <database-name> --remote --file scripts/reset-d1.sql
-```
-
-reset 會永久刪除活動、參加者、QR scan keys、工作站、報到紀錄、audit 與 legacy projection 資料。部署完成後，請驗證登入、登出、限流、安全標頭、CSV 匯入、單機與多機即時報到、投影、活動還原、到期清除與永久刪除。
-
-`scripts/reset-d1.sql` 提供非 Sites 部署的人工 reset。`drizzle/0000`–`0006` 保留給 migration regression tests 與需要保留既有資料的部署者。
-
 ## 參與開發
 
-請先閱讀 [AGENTS.md](AGENTS.md)、[系統架構文件](docs/architecture.md) 與 [Security Review](docs/security-review.md)。變更需要保留單機與多機的即時資料一致性、掃描冪等性、每場活動隔離與參加者資料最小化。
+請先閱讀 [AGENTS.md](AGENTS.md) 與 [系統架構文件](docs/architecture.md)。變更需要保留單機與多機的即時資料一致性、掃描冪等性、每場活動隔離與參加者資料最小化。
 
 ## 授權
 
-本專案採用 [Apache License 2.0](LICENSE)。此授權允許商業使用、修改與散布，並提供明確的專利授權。散布時需要保留授權與著作權標示，修改過的檔案需要標示變更。Inter 與 Noto Sans TC 使用 SIL Open Font License 1.1。完整資訊請看 [第三方授權聲明](THIRD_PARTY_NOTICES.md)。
+本專案採用 [Apache License 2.0](LICENSE)。
+
+Inter 與 Noto Sans TC 使用 SIL Open Font License 1.1。完整資訊請看 [第三方授權聲明](https://github.com/hlb/checkin-pod/blob/main/THIRD_PARTY_NOTICES.md)。

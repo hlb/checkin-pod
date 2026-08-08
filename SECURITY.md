@@ -38,4 +38,4 @@ These targets describe the intended response and may change with maintainer avai
 
 ## Deployment security
 
-Deployers are responsible for secrets, Cloudflare account controls, rate limiting, logs, backups, retention settings, and privacy notices. Review [docs/security-review.md](docs/security-review.md) before production use.
+Deployers are responsible for secrets, Cloudflare account controls, rate limiting, logs, backups, retention settings, and privacy notices.
