@@ -37,7 +37,6 @@ Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位�
 - Cloudflare Workers runtime
 - Cloudflare D1 / SQLite
 - Inter Variable、Noto Sans TC Variable（自託管網頁字型）
-- 經人工檢查的 forward-only SQL migrations
 - IndexedDB、Local Storage、BroadcastChannel
 
 完整元件、資料流與信任邊界請看 [系統架構文件](docs/architecture.md)。
