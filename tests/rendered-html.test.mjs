@@ -186,6 +186,10 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(scanPage, /BarcodeDetector/);
   assert.match(scanPage, /deviceId: \{ exact: cameraId \}/);
   assert.match(scanPage, /報到提示音/);
+  assert.match(scanPage, /guest-camera-panel/);
+  assert.match(scanPage, /鏡頭持續顯示，可直接掃描下一位/);
+  assert.match(scanPage, /<video ref=\{videoRef\}[\s\S]*\{!result \? \(/);
+  assert.doesNotMatch(scanPage, /!cameraActive \|\| result \|\| !barcodeDetectorRef/);
   assert.match(page, /目前報到率/);
   assert.match(page, /播放登車廣播/);
   assert.match(page, /全場彩蛋/);
@@ -226,6 +230,8 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(workerSource, /clearPublishedLiveEvent/);
   assert.doesNotMatch(workerSource + auth, /llap55688/);
   assert.match(styles, /\.guest-screen\.has-custom-background\s*\{[^}]*background-size:\s*contain/s);
+  assert.match(styles, /\.guest-scan-content\.has-camera/);
+  assert.match(styles, /\.camera-scan-status\.success/);
   assert.match(styles, /@keyframes planetFlyIn/);
   for (const type of ["rocky", "ringed", "banded", "cube", "molten", "crystal"]) {
     assert.match(styles, new RegExp(`\\.energy-planet\\.type-${type}`));

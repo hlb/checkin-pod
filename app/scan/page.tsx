@@ -258,10 +258,10 @@ export default function ScanPage() {
   useEffect(() => {
     const video = videoRef.current;
     const stream = cameraStreamRef.current;
-    if (!cameraActive || result || !video || !stream) return;
+    if (!cameraActive || !video || !stream) return;
     video.srcObject = stream;
     void video.play().catch(() => setCameraError("鏡頭預覽暫時無法繼續，請重新開啟鏡頭。"));
-  }, [cameraActive, result]);
+  }, [cameraActive]);
 
   const refreshEvent = useCallback(async () => {
     let hasRemoteSession = false;
@@ -480,7 +480,7 @@ export default function ScanPage() {
   }, [drainScanQueue]);
 
   useEffect(() => {
-    if (!cameraActive || result || !barcodeDetectorRef.current) return;
+    if (!cameraActive || !barcodeDetectorRef.current) return;
     let detecting = false;
     const timer = window.setInterval(() => {
       const video = videoRef.current;
@@ -507,7 +507,7 @@ export default function ScanPage() {
         });
     }, 220);
     return () => window.clearInterval(timer);
-  }, [cameraActive, processScan, result]);
+  }, [cameraActive, processScan]);
 
   useEffect(() => {
     if (!event || scanText.trim().length < 3) return;
@@ -567,7 +567,7 @@ export default function ScanPage() {
 
   return (
     <main
-      className={`guest-screen ${backgroundImageDataUrl ? "has-custom-background" : ""} ${result ? `show-result ${result.kind}` : "is-idle"}`}
+      className={`guest-screen ${backgroundImageDataUrl ? "has-custom-background" : ""} ${cameraActive ? "camera-active" : ""} ${result ? `show-result ${result.kind}` : "is-idle"}`}
       style={guestScreenStyle}
     >
       <form className="guest-scan-form" onSubmit={submitScan}>
@@ -653,62 +653,80 @@ export default function ScanPage() {
 
       {error ? <div className="guest-screen-error" role="alert">{error}</div> : null}
 
-      {!result ? (
-        <section className="guest-idle-content" aria-live="polite">
+      <div className={`guest-scan-content ${cameraActive ? "has-camera" : ""}`}>
+        <section className="guest-camera-panel" aria-label="電腦鏡頭掃描區" aria-hidden={!cameraActive}>
           <div className={`camera-view ${cameraActive ? "is-active" : ""}`}>
             <video ref={videoRef} muted playsInline aria-label="電腦鏡頭 QR Code 預覽" />
             <span className="camera-reticle" aria-hidden="true" />
           </div>
-          {!cameraActive ? (
-            <div className="scan-symbol" aria-hidden="true">
-              <i className="corner c1" /><i className="corner c2" />
-              <i className="corner c3" /><i className="corner c4" />
-              <span className="scan-line" />
-              <b>QR</b>
-            </div>
-          ) : null}
-          <p className="guest-eyebrow">WELCOME · 歡迎抵達</p>
-          <p className="guest-instruction">
-            {cameraActive ? "將 QR Code 放入鏡頭框內" : "將票券上的 QR Code 對準掃描器"}
-          </p>
-        </section>
-      ) : result.kind === "unknown" ? (
-        <section className="guest-result-content" aria-live="assertive">
-          <div className="result-mark unknown-mark">?</div>
-          <p className="guest-eyebrow">NEEDS ASSISTANCE</p>
-          <h1>找不到報名資料</h1>
-          <p className="result-subtitle">請洽報到人員協助確認</p>
-          <div className="reset-countdown"><span /> 畫面將自動回到掃描狀態</div>
-        </section>
-      ) : (
-        <section className="guest-result-content guest-person-result" aria-live="assertive">
-          <div className="guest-status-column">
-            <div className={`result-mark ${result.kind === "success" ? "success-mark" : "duplicate-mark"}`}>
-              {result.kind === "success" ? "✓" : "!"}
-            </div>
-            <p className="guest-eyebrow">
-              {result.kind === "success" ? "CHECK-IN COMPLETE" : "ALREADY CHECKED IN"}
-            </p>
-            <h1>{result.kind === "success" ? "報到成功" : "已報到過"}</h1>
-            <p className="result-subtitle">
-              {result.kind === "success" ? "謝謝您的到來，祝活動愉快" : `報到時間 ${formatTime(result.attendee?.checkedInAt ?? null)}`}
-            </p>
-            <div className="reset-countdown"><span /> 可直接掃描下一位來賓</div>
+          <div className={`camera-scan-status ${result?.kind ?? "ready"}`} aria-live="polite">
+            <i aria-hidden="true" />
+            <span>
+              {!result
+                ? "鏡頭持續掃描中"
+                : result.kind === "success"
+                  ? `${result.attendee?.name ?? "來賓"}報到成功`
+                  : result.kind === "duplicate"
+                    ? `${result.attendee?.name ?? "來賓"}已報到過`
+                    : "找不到報名資料"}
+            </span>
           </div>
-          <div className="guest-details-column">
-            {result.attendee ? (
-              <div className="guest-data-grid">
-                {selectedFields.map((field) => (
-                  <div className="guest-data-item" key={field}>
-                    <span>{labelForField(field)}</span>
-                    <strong>{displayValue(result.attendee as Attendee, field)}</strong>
-                  </div>
-                ))}
+          <p>將下一張 QR Code 放入鏡頭框內</p>
+        </section>
+
+        {!result ? (
+          <section className="guest-idle-content" aria-live="polite">
+            {!cameraActive ? (
+              <div className="scan-symbol" aria-hidden="true">
+                <i className="corner c1" /><i className="corner c2" />
+                <i className="corner c3" /><i className="corner c4" />
+                <span className="scan-line" />
+                <b>QR</b>
               </div>
             ) : null}
-          </div>
-        </section>
-      )}
+            <p className="guest-eyebrow">WELCOME · 歡迎抵達</p>
+            <p className="guest-instruction">
+              {cameraActive ? "鏡頭會持續顯示並掃描下一位來賓" : "將票券上的 QR Code 對準掃描器"}
+            </p>
+          </section>
+        ) : result.kind === "unknown" ? (
+          <section className="guest-result-content" aria-live="assertive">
+            <div className="result-mark unknown-mark">?</div>
+            <p className="guest-eyebrow">NEEDS ASSISTANCE</p>
+            <h1>找不到報名資料</h1>
+            <p className="result-subtitle">請洽報到人員協助確認</p>
+            <div className="reset-countdown"><span /> 鏡頭持續顯示，可直接掃描下一位</div>
+          </section>
+        ) : (
+          <section className="guest-result-content guest-person-result" aria-live="assertive">
+            <div className="guest-status-column">
+              <div className={`result-mark ${result.kind === "success" ? "success-mark" : "duplicate-mark"}`}>
+                {result.kind === "success" ? "✓" : "!"}
+              </div>
+              <p className="guest-eyebrow">
+                {result.kind === "success" ? "CHECK-IN COMPLETE" : "ALREADY CHECKED IN"}
+              </p>
+              <h1>{result.kind === "success" ? "報到成功" : "已報到過"}</h1>
+              <p className="result-subtitle">
+                {result.kind === "success" ? "謝謝您的到來，祝活動愉快" : `報到時間 ${formatTime(result.attendee?.checkedInAt ?? null)}`}
+              </p>
+              <div className="reset-countdown"><span /> 鏡頭持續顯示，可直接掃描下一位</div>
+            </div>
+            <div className="guest-details-column">
+              {result.attendee ? (
+                <div className="guest-data-grid">
+                  {selectedFields.map((field) => (
+                    <div className="guest-data-item" key={field}>
+                      <span>{labelForField(field)}</span>
+                      <strong>{displayValue(result.attendee as Attendee, field)}</strong>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </section>
+        )}
+      </div>
 
     </main>
   );
