@@ -24,7 +24,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 - Worker gateway、管理登入與 session。
 - `/api/shared-checkin` 的 admin、lane 與 public projection scope。
 - 單機與多機 browser storage。
-- CSV parsing、匯出、scan key normalization、同步與離線佇列。
+- CSV parsing、匯出、scan key normalization 與即時報到資料流。
 - D1 runtime schema、migrations、外鍵、retention 與 audit。
 - 公開 projection、benchmark 與 response headers。
 - dependency audit、tracked secret patterns 與開源資料風險。
@@ -76,7 +76,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 - `displayValues` 由伺服器依活動 `selected_fields_json` 產生。未選 Email、電話、QR Code、approval status 與 `original_json` 不會出現在 response。
 - 工作站連結使用 `/scan#event=…&lane=…&token=…`。fragment 不會送到 Worker、proxy access log 或 Referer。
 - `activate_lane` 成功後設定 production `__Host-checkin_pod_lane_session`，屬性為 `HttpOnly; Secure; SameSite=Strict; Path=/`。
-- 瀏覽器立即用 `history.replaceState()` 清除 fragment。Local Storage 只保存非秘密 lane metadata 與待送 request。
+- 瀏覽器立即用 `history.replaceState()` 清除 fragment。Local Storage 只保存非秘密 lane metadata，不保存掃描內容。
 - 舊 IndexedDB lane token 只會被讀取一次以交換 Cookie，成功後立即從儲存內容移除。
 - token 換發或 lane revoke 後，D1 token hash 改變或 lane 失效，舊 Cookie 無法再授權。
 
@@ -93,6 +93,16 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 
 超限回覆 429 與 `Retry-After: 60`。lane 配額限制單一工作站，較高的 IP 配額容納同一 NAT 後方最多 100 個工作站與已驗證的 10,000 × 50 尖峰。本機與沒有 binding 的測試環境使用有界 process-local window。Cloudflare 的 binding 計數是 per-location 且最終一致，因此 production 仍建議用 account-level WAF rule 與監控補強。
 
+### 即時報到資料流
+
+- 單機與多機都使用 D1 作為報到操作的資料來源。
+- 每次掃描立即呼叫受 lane Cookie 保護的 `POST scan`，並使用唯一 `requestId`。
+- 瀏覽器不保存離線掃描佇列，也不執行背景批次或手動同步。
+- 網路或伺服器錯誤會立即顯示。操作人員恢復連線後重新掃描。
+- `/projection` 與報到 API 讀寫同一個 `event_id`，成功寫入後會在下一次 projection feed 輪詢出現。
+
+此設計減少瀏覽器持久化掃描內容與 local/server 衝突面。可用性取決於現場網路與 D1。活動主辦單位需要提供穩定網路，並在錯誤發生時重新掃描。
+
 ### SEC-004 — repository 資料安全
 
 `.gitignore` 預設忽略 CSV、TSV、Excel 與一般 ZIP，只允許 `tests/fixtures/*.csv` 和兩份明確的 synthetic sample ZIP。文件與 AGENTS 規則禁止讀取或提交未被任務指定的活動名單。
@@ -106,7 +116,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 - `SESSION_SECRET` 與密碼分離，長度至少 32 字元。
 - HMAC-SHA-256 claims 包含版本、actor、簽發、到期與隨機 nonce。Cookie 最長 8 小時。
 - production Cookie 使用 `__Host-` prefix、`HttpOnly`、`Secure` 與 `SameSite=Strict`。
-- 登入、登出、匯入、同步、attendee mutation、lane mutation、投影設定、cue、活動狀態、改名與刪除都記錄 actor、action、event、時間、request ID 與雜湊來源。
+- 登入、登出、匯入、attendee mutation、lane mutation、投影設定、cue、活動狀態、改名與刪除都記錄 actor、action、event、時間、request ID 與雜湊來源。
 - audit 不保存明文 IP、密碼、session、lane token 或 attendee row。
 
 多團隊正式環境仍建議在 Worker 前方加入 Cloudflare Access 或其他具 MFA 與 lifecycle 的 IdP。內建帳號沒有角色區分。
@@ -175,7 +185,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 | Path traversal | API 不接受 filesystem path。CSV 與背景圖片在瀏覽器處理。 |
 | Secret storage | 管理秘密在 environment；admin / lane session 在 HttpOnly Cookie；D1 只保存 lane token hash。 |
 | Replay | scan request ID 保證冪等。lane token 可 revoke / rotate。管理 session 有期限與隨機 nonce。 |
-| Availability | payload、attendee、lane、queue、scan 與 unknown scan 都有上限。Cloudflare binding 非全球強一致，列為剩餘風險。 |
+| Availability | payload、attendee、lane、scan 與 unknown scan 都有上限。報到需要網路連線，失敗的掃描不會保存在瀏覽器佇列。Cloudflare binding 非全球強一致，列為剩餘風險。 |
 | Spreadsheet export | 危險公式前綴已中和並有測試。 |
 | Data deletion | 手動確認刪除與 expiry cleanup 都使用 event cascade；audit 證據獨立保留。 |
 
@@ -239,7 +249,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 以下變更需要重新做 threat model 與 security regression：
 
 - 新增登入方式、角色、Cloudflare Access 或第三方 IdP。
-- 改變 lane bootstrap、Cookie、URL 或離線儲存格式。
+- 改變 lane bootstrap、Cookie、URL 或瀏覽器儲存格式。
 - 公開 projection 加入新欄位或改變預設隱私模式。
 - D1 保存更多 CSV 欄位、延長 retention 或改變 delete cascade。
 - 引入新的 image parser、file upload、remote fetch、Web Serial 或硬體整合。

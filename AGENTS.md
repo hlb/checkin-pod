@@ -8,8 +8,8 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 
 1. 正確判定報到與重複掃描。
 2. 保護活動參加者資料與工作站權杖。
-3. 維持單機模式在網路不穩時可使用。
-4. 維持多機模式的原子性與冪等性。
+3. 維持單機與多機每筆報到立即寫入伺服器。
+4. 維持所有模式的原子性與冪等性。
 5. 提供活動主辦單位可以直接理解的介面與文件。
 
 ## 技術地圖
@@ -18,8 +18,8 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 - `app/scan/page.tsx`：USB 鍵盤與相機掃描畫面。
 - `app/projection/page.tsx`：公開投影畫面。
 - `app/benchmark/`：公開效能示範。
-- `app/checkin-core.ts`：CSV、IndexedDB、單機掃描與安全匯出。
-- `app/shared-checkin.ts`：多機與單機備份的 client API。
+- `app/checkin-core.ts`：CSV、IndexedDB 活動快取與安全匯出。
+- `app/shared-checkin.ts`：單機與多機的即時 client API。
 - `app/api/shared-checkin/route.ts`：活動、名單、工作站、掃描與投影 API。
 - `app/admin-auth.ts`、`app/lane-auth.ts`：簽章管理 session 與工作站 Cookie。
 - `app/shared-checkin-sql.ts`：runtime D1 schema 與原子報到 SQL。
@@ -64,17 +64,18 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 - 新增 API action 時先定義 actor、資料範圍、輸入上限、重放行為與 rate limit。
 - 狀態變更使用 POST、PUT、PATCH 或 DELETE。GET 保持唯讀。
 
-## 報到與同步不變條件
+## 報到與即時資料不變條件
 
 - 單場活動最多 10,000 位可報到者。
 - 單場活動最多 100 個啟用工作站。
-- 多機報到使用條件更新，只有第一個請求得到 success。
+- 單機與多機報到都立即送到 D1，使用條件更新，只有第一個請求得到 success。
 - 每筆掃描使用 request ID。相同 request ID 重送得到相同結果。
-- ordered changes feed 是多機中控台 cursor 的唯一推進來源。
+- ordered changes feed 是中控台 cursor 的唯一推進來源。
 - 單筆掃描回應不可跳過其他工作站較早產生的 activity。
 - 未知 QR Code 不改變參加者資料。
 - undo 保留 activity 並清除報到時間。
-- 背景同步只更新同一個 `event_id`。
+- 單機與多機都不提供離線掃描、背景批次同步或手動同步。
+- 網路失敗時明確顯示錯誤，該次掃描需要重新執行。
 - 載入歷史活動需要明確切換目前活動。
 - 永久刪除需要有效管理 session 與活動專屬確認字串。
 - 刪除活動需要由外鍵 cascade 清除 attendees、scan keys、lanes 與 activity。
@@ -82,8 +83,9 @@ Checkin Pod 提供活動現場 QR Code 報到。系統的優先順序如下：
 ## 瀏覽器儲存
 
 - IndexedDB `checkin-pod` 保存目前活動與背景圖片。
-- 單機模式以 IndexedDB 為操作來源。
-- 多機工作站的待送佇列保存在 Local Storage，每站最多 100 筆。
+- D1 是單機與多機報到操作的資料來源。
+- IndexedDB 保存目前活動快取、完整原始欄位與顯示設定。
+- Local Storage 只保存非秘密的工作站識別資料。
 - Local Storage 與 IndexedDB 不保存可重播的 lane token。舊格式 token 只能用於一次 migration，成功交換後立即刪除。
 - BroadcastChannel 只負責同瀏覽器分頁通知。
 - 儲存格式變更需要提供 migration 或相容讀取。
@@ -134,7 +136,7 @@ npm audit --omit=dev
 npm audit
 ```
 
-多機、資料庫或同步變更需要增加對應測試。高風險變更需要執行 `npm run stress`。壓力測試會建立並刪除專用測試活動，僅能對明確的測試環境執行。
+報到、資料庫或即時資料流變更需要增加對應測試。高風險變更需要執行 `npm run stress`。壓力測試會建立並刪除專用測試活動，僅能對明確的測試環境執行。
 
 測試至少涵蓋：
 
@@ -142,6 +144,7 @@ npm audit
 - 錯誤、停用與舊工作站 token 被拒絕。
 - 同票競態只有一個 success。
 - 相同 request ID 重送維持冪等。
+- 網路失敗不建立離線掃描佇列，畫面提示重新掃描。
 - 10,001 人匯入被拒絕。
 - projection 不回傳 Email、電話、QR Code 與原始欄位。
 - lane scan 只回傳固定識別欄位與 server-side allowlist 的 display values。
@@ -162,7 +165,7 @@ npm audit
 - 新路徑或 API action。
 - 認證與授權模式。
 - 瀏覽器儲存或 D1 schema。
-- 單機或多機同步流程。
+- 單機或多機即時報到流程。
 - 部署 binding 與環境變數。
 - 容量與壓力測試結果。
 

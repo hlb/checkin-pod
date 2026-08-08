@@ -9,8 +9,10 @@
 
 Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多入口協作、即時投影、活動歷史與結果匯出。系統提供兩種操作模式：
 
-- 單機模式以瀏覽器 IndexedDB 為主要操作資料，並每 5 分鐘把報到狀態同步至伺服器。
-- 多機模式以 D1 為共同資料來源，每個入口使用獨立 HttpOnly 工作站 session 即時寫入。
+- 單機模式使用一台主要工作站，每筆報到立即寫入 D1。
+- 多機模式使用多個入口工作站，每筆報到立即寫入同一場活動的 D1 資料。
+
+D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、完整原始欄位與顯示設定。
 
 ## 2. 系統脈絡
 
@@ -33,11 +35,11 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 | 元件 | 路徑 | 職責 |
 |---|---|---|
 | 管理中控台 | `app/page.tsx` | CSV 匯入、模式選擇、報到、隱私設定、歷史與匯出 |
-| 報到畫面 | `app/scan/page.tsx` | USB 鍵盤輸入、相機掃描、工作站啟用、離線佇列、結果呈現 |
+| 報到畫面 | `app/scan/page.tsx` | USB 鍵盤輸入、相機掃描、工作站啟用、即時報到與結果呈現 |
 | 投影畫面 | `app/projection/page.tsx` | 讀取公開 projection feed、繪製星球與 cue |
 | Benchmark | `app/benchmark/` | 顯示已驗證壓力測試數字 |
-| 單機核心 | `app/checkin-core.ts` | CSV parsing、IndexedDB、單機 scan、資料最小化與 CSV 安全匯出 |
-| 共用 client | `app/shared-checkin.ts` | shared API、lane session、分頁復原與同步 |
+| 瀏覽器資料核心 | `app/checkin-core.ts` | CSV parsing、IndexedDB 活動快取、資料最小化與 CSV 安全匯出 |
+| 共用 client | `app/shared-checkin.ts` | 即時 scan API、lane session、ordered changes 與分頁復原 |
 | 認證核心 | `app/admin-auth.ts`、`app/lane-auth.ts` | HMAC admin session 與 HttpOnly lane Cookie |
 | Worker gateway | `worker/index.ts` | 管理登入、登出、路徑保護、限流、安全標頭與每日清理排程 |
 | Shared API | `app/api/shared-checkin/route.ts` | 活動、名單、lane、scan、changes、projection、retention 與 audit |
@@ -55,15 +57,17 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 
 1. 管理員在中控台匯入 CSV。
 2. 瀏覽器解析 CSV，建立 `SavedEvent` 與 `Attendee[]`。
-3. IndexedDB 保存完整原始欄位、掃描鍵與目前狀態。
-4. `/scan` 從同一個瀏覽器 profile 的 IndexedDB 讀取活動。
-5. 掃描與手動報到透過 write lock 更新 IndexedDB。
-6. BroadcastChannel 通知同源分頁重新讀取。
-7. 中控台把報到必要欄位與選定顯示欄位最小化後匯入 D1。
-8. 中控台每 5 分鐘比較 local/server signature，並分段同步 `id` 與 `checkedInAt`。管理員也可以手動同步。
-9. `/projection` 讀取公開且經隱私設定轉換的 snapshot 或 changes。
+3. 中控台把報到必要欄位與選定顯示欄位最小化後匯入 D1。
+4. 伺服器建立活動與單機主要 lane，並設定 HttpOnly lane Cookie。
+5. IndexedDB 保存完整原始欄位、掃描鍵、活動連線資料與最新狀態快取。
+6. `/scan` 從同一個瀏覽器 profile 讀取活動連線。
+7. 每次掃描呼叫 `POST scan`。手動報到呼叫 `POST set_attendee`。
+8. D1 原子判定成功、重複或未知，並立即寫入 activity。
+9. 中控台透過 ordered changes feed 取得最新狀態。`/projection` 透過 projection feed 取得 snapshot 或 cursor changes。
 
 完整原始 CSV row 留在管理瀏覽器。D1 保存活動復原與報到需要的欄位，單筆最小化 `original_json` 上限為 20 KB。
+
+舊版 `singleSync` IndexedDB 記錄只用於一次相容遷移。中控台開啟活動時會從 D1 復原名單、建立新的主 lane，並改存 `sharedEvent` 連線。
 
 ### 4.2 多機模式
 
@@ -71,7 +75,7 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 2. 伺服器建立活動、主 lane 與隨機 lane token，只保存 token SHA-256。
 3. 中控台建立 `/scan#event=…&lane=…&token=…` 工作站連結。fragment 不會成為 HTTP request 或 Referer。
 4. 工作站使用 POST 交換 bootstrap token。伺服器設定 `HttpOnly; SameSite=Strict; Secure` production Cookie，瀏覽器立即清除 fragment。
-5. Local Storage 只保存 event、lane、lane name 與最多 100 筆待送掃描，不保存 token。
+5. Local Storage 只保存 event、lane 與 lane name，不保存 token 或掃描內容。
 6. API 將 QR Code 正規化並以 SHA-256 雜湊查找 attendee。
 7. SQL 只在 `checked_in_at IS NULL` 時更新 attendee。
 8. API 寫入帶有唯一 `request_id` 的 activity。
@@ -85,7 +89,9 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 - `(event_id, request_id)` unique index 保證重送冪等。
 - `checkin_activity.id` 是每場活動 changes feed 的游標。
 - 中控台只以 ordered changes feed 推進 shared cursor。
-- scan response 可以立即更新當次 UI，不能取代 changes reconciliation。
+- scan response 可以立即更新當次 UI。ordered changes feed 負責跨工作站狀態一致性。
+- 單機與多機都不使用離線掃描佇列、背景批次同步或手動同步。
+- 網路或伺服器錯誤會立即顯示。該次掃描需要重新執行。
 - 匯入前會拒絕同場活動內指向不同 attendee 的重複 scan key。
 
 ## 5. 資料模型
@@ -96,7 +102,7 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 
 | Table | Key | 內容 | 保存期 |
 |---|---|---|---|
-| `checkin_events` | `event_id` | 活動名稱、顯示設定、隱私模式、同步模式、狀態、cue、到期日 | 預設 30 天或手動刪除 |
+| `checkin_events` | `event_id` | 活動名稱、顯示設定、隱私模式、操作模式、狀態、cue、到期日 | 預設 30 天或手動刪除 |
 | `checkin_attendees` | `(event_id, attendee_id)` | 報到必要欄位、選定顯示欄位、報到時間、最小化 JSON | event cascade |
 | `checkin_scan_keys` | `(event_id, key_hash)` | QR、Email、票號等掃描鍵的 SHA-256 與 attendee 關聯 | event 或 attendee cascade |
 | `checkin_lanes` | `lane_id` | lane 名稱、token hash、使用與停用時間 | event cascade |
@@ -124,7 +130,6 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 | `POST scan` | 報到工作站 | lane Cookie | QR 判定與最小化當次結果 |
 | `GET lanes/admin_summary/events/roster/changes` | 管理員 | admin Cookie | 工作站、活動歷史、完整名單與 ordered feed |
 | `POST begin/upload/finalize` | 管理員 | admin Cookie | 分段匯入最小化活動資料 |
-| `POST sync_single` | 管理員 | admin Cookie | 單機報到狀態同步 |
 | `POST set_attendee` | 管理員 | admin Cookie | 手動報到與取消 |
 | `POST lane mutations` | 管理員 | admin Cookie | 新增、改名、停用、換發 |
 | `POST event mutations` | 管理員 | admin Cookie | 設定、cue、啟用、停用、改名、刪除 |
@@ -160,7 +165,7 @@ Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多�
 
 ### 邊界 D：瀏覽器儲存
 
-IndexedDB 保存單機完整名單。Local Storage 保存非秘密 lane metadata 與離線 request queue。任何同源 XSS 都可能讀取這些資料；admin 與 lane HttpOnly Cookie 無法由 JavaScript 直接讀取。CSP 與資料最小化降低影響。
+IndexedDB 保存目前活動快取與完整原始欄位。Local Storage 只保存非秘密 lane metadata，不保存掃描內容。任何同源 XSS 都可能讀取這些資料；admin 與 lane HttpOnly Cookie 無法由 JavaScript 直接讀取。CSP 與資料最小化降低影響。
 
 ### 邊界 E：D1
 
@@ -182,7 +187,6 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 - 匯入 chunk：200 attendees。
 - changes page：500 records。
 - roster page：最多 500 attendees。
-- 工作站離線佇列：100 scans。
 - CSV 檔案上限：50 MB，在 `file.text()` 前檢查。
 - shared API JSON request body 上限：4 MB，依實際 request stream bytes 檢查。
 - 管理登入 body 上限：4 KB，依實際 request stream bytes 檢查。
@@ -221,11 +225,10 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 
 | 失敗 | 系統行為 | 操作 |
 |---|---|---|
-| 單機網路中斷 | IndexedDB 繼續報到 | 網路恢復後自動或手動同步 |
-| 多機短暫網路中斷 | Local Storage 保留最多 100 筆 | 自動重送相同 request ID |
+| 單機或多機網路中斷 | 當次 scan API 失敗，畫面顯示錯誤 | 恢復連線後重新掃描 |
 | lane 停用或換發 | API 回覆 401 | 中控台產生新的工作站連結 |
-| D1 寫入失敗 | API 回覆 500 | 保留佇列並重試 |
-| rate limit | API 回覆 429 與 `Retry-After: 60` | 等待後重送原 request ID |
+| D1 寫入失敗 | API 回覆 500，當次報到不成立 | 確認服務恢復後重新掃描 |
+| rate limit | API 回覆 429 與 `Retry-After: 60` | 等待 60 秒後重新掃描 |
 | 本機名單遺失 | 中控台讀取活動歷史 | 從 D1 分頁復原最小化資料 |
 | 投影中斷 | 投影頁輪詢公開 feed | 重新連線後取得 snapshot 或 changes |
 | 誤刪風險 | UI 要求貼上活動專屬字串 | D1 cascade 永久刪除 |

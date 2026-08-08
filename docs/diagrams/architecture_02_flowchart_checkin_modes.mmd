@@ -1,49 +1,48 @@
 flowchart TB
-    CSV["活動 CSV<br/>Luma / KKTIX"]
+    CSV["📥 活動 CSV<br/>Luma / KKTIX"]
     SELECT{"選擇報到模式"}
+    PARSE["⚙️ 瀏覽器解析 CSV"]
+    IDB["💾 IndexedDB<br/>活動快取與完整原始欄位"]
+    MINIMIZE["🛡️ 伺服器欄位最小化<br/>必要欄位 + 選取顯示欄位"]
+    IMPORT["📤 begin / upload / finalize<br/>每批 200 人"]
 
     subgraph SINGLE["單機模式"]
-        PARSE_LOCAL["瀏覽器解析 CSV"]
-        IDB["IndexedDB<br/>完整名單與報到狀態"]
-        LOCAL_SCAN["同瀏覽器 /scan<br/>原子 write lock"]
-        SIGNATURE["每 5 分鐘比較狀態<br/>支援立即同步"]
-        SINGLE_API["sync_single API<br/>分段更新 checkedInAt"]
+        SINGLE_LANE["🔐 單機主工作站<br/>HttpOnly lane session"]
+        SINGLE_SCAN["🎫 同瀏覽器 /scan<br/>每筆立即送出"]
     end
 
     subgraph MULTI["多機模式"]
-        IMPORT["begin / upload / finalize<br/>每批 200 人"]
-        LANES["每個入口建立<br/>fragment 啟用連結"]
-        COOKIE["HttpOnly lane session<br/>清除網址中的 secret"]
-        QUEUE["Local Storage<br/>最多 100 筆待送且不含 token"]
-        SCAN_API["scan API<br/>cookie 驗證、限流與 key hash 查找"]
-        ATOMIC["條件 UPDATE<br/>checked_in_at IS NULL"]
-        ACTIVITY["activity log<br/>唯一 request ID"]
-        CHANGES["ordered changes feed<br/>cursor reconciliation"]
+        LANES["🎫 每個入口建立<br/>fragment 啟用連結"]
+        COOKIE["🔐 HttpOnly lane session<br/>清除網址中的 secret"]
+        MULTI_SCAN["📥 多入口 /scan<br/>每筆立即送出"]
     end
 
-    MINIMIZE["伺服器欄位最小化<br/>必要欄位 + 選取顯示欄位"]
-    D1[("D1<br/>每場 event_id 隔離<br/>30 天到期日")]
-    PUBLIC["公開 projection feed<br/>預設匿名、可選遮罩或姓名"]
+    SCAN_API["🌐 scan API<br/>cookie 驗證、限流與 key hash 查找"]
+    ATOMIC["✅ 條件 UPDATE<br/>checked_in_at IS NULL"]
+    ACTIVITY["📝 activity log<br/>唯一 request ID"]
+    CHANGES["🔄 ordered changes feed<br/>cursor reconciliation"]
+    D1[("🗄️ D1<br/>每場 event_id 隔離<br/>30 天到期日")]
+    PUBLIC["📊 公開 projection feed<br/>預設匿名、可選遮罩或姓名"]
 
     CSV --> SELECT
-    SELECT -->|"預設"| PARSE_LOCAL
-    SELECT -->|"多入口"| IMPORT
-    PARSE_LOCAL --> IDB
-    IDB <--> LOCAL_SCAN
-    IDB --> SIGNATURE
-    SIGNATURE --> SINGLE_API
-    SINGLE_API <--> D1
-    IMPORT --> MINIMIZE
-    MINIMIZE --> D1
-    D1 --> LANES
+    SELECT --> PARSE
+    PARSE --> IDB
+    PARSE --> MINIMIZE
+    MINIMIZE --> IMPORT
+    IMPORT --> D1
+    D1 -->|"預設"| SINGLE_LANE
+    SINGLE_LANE --> SINGLE_SCAN
+    SINGLE_SCAN --> SCAN_API
+    D1 -->|"多入口"| LANES
     LANES --> COOKIE
-    COOKIE --> QUEUE
-    QUEUE --> SCAN_API
+    COOKIE --> MULTI_SCAN
+    MULTI_SCAN --> SCAN_API
     SCAN_API --> ATOMIC
     ATOMIC --> D1
     SCAN_API --> ACTIVITY
     ACTIVITY --> D1
     D1 --> CHANGES
+    CHANGES --> IDB
     D1 --> PUBLIC
 
     classDef input fill:#FFF3D6,stroke:#7A4B00,stroke-width:2px,color:#251700
@@ -55,7 +54,7 @@ flowchart TB
 
     class CSV input
     class SELECT decision
-    class PARSE_LOCAL,IDB,LOCAL_SCAN,SIGNATURE,SINGLE_API local
-    class IMPORT,MINIMIZE,LANES,COOKIE,QUEUE,SCAN_API,ATOMIC,ACTIVITY,CHANGES shared
+    class PARSE,IDB local
+    class IMPORT,MINIMIZE,SINGLE_LANE,SINGLE_SCAN,LANES,COOKIE,MULTI_SCAN,SCAN_API,ATOMIC,ACTIVITY,CHANGES shared
     class D1 store
     class PUBLIC public

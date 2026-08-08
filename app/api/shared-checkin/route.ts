@@ -638,56 +638,6 @@ async function handleSetAttendee(request: Request, body: Record<string, unknown>
   return noStoreJson({ attendee: row ? attendeeFromRow(row) : attendeeFromRow(existing), cursor: activity?.id ?? 0 });
 }
 
-async function handleSingleSync(request: Request, body: Record<string, unknown>, database: D1Database) {
-  if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
-  const eventId = safeText(body.eventId, 80);
-  const syncId = safeText(body.syncId, 80);
-  const rawChanges = Array.isArray(body.changes) ? body.changes : [];
-  if (!eventId || !syncId || !rawChanges.length || rawChanges.length > 200) {
-    return noStoreJson({ error: "invalid_payload" }, { status: 400 });
-  }
-  const event = await database.prepare(`SELECT status, sync_mode FROM checkin_events
-    WHERE event_id = ? LIMIT 1`).bind(eventId).first<{ status: string; sync_mode: string }>();
-  if (!event) return noStoreJson({ error: "event_not_found" }, { status: 404 });
-  if (event.status !== "active" || event.sync_mode !== "single") {
-    return noStoreJson({ error: "event_not_ready" }, { status: 409 });
-  }
-
-  const statements: D1PreparedStatement[] = [];
-  const occurredAt = new Date().toISOString();
-  for (let index = 0; index < rawChanges.length; index += 1) {
-    const raw = rawChanges[index];
-    const change = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-    const attendeeId = safeText(change.id, 240);
-    const checkedInAt = change.checkedInAt === null ? null : safeIso(change.checkedInAt);
-    if (!attendeeId || change.checkedInAt !== null && !checkedInAt) {
-      return noStoreJson({ error: "invalid_payload" }, { status: 400 });
-    }
-    const requestId = `${syncId}:${index}`;
-    const outcome = checkedInAt ? "success" : "undo";
-    statements.push(
-      database.prepare(`INSERT OR IGNORE INTO checkin_activity
-          (event_id, attendee_id, lane_id, outcome, checked_in_at, occurred_at, request_id)
-        SELECT ?, attendee_id, NULL, ?, ?, ?, ? FROM checkin_attendees
-        WHERE event_id = ? AND attendee_id = ? AND checked_in_at IS NOT ?`)
-        .bind(eventId, outcome, checkedInAt, occurredAt, requestId, eventId, attendeeId, checkedInAt),
-      database.prepare(`UPDATE checkin_attendees
-        SET checked_in_at = ?, checked_in_lane_id = NULL
-        WHERE event_id = ? AND attendee_id = ? AND checked_in_at IS NOT ?`)
-        .bind(checkedInAt, eventId, attendeeId, checkedInAt),
-    );
-  }
-  for (let index = 0; index < statements.length; index += 100) {
-    await database.batch(statements.slice(index, index + 100));
-  }
-  await database.prepare("UPDATE checkin_events SET updated_at = ? WHERE event_id = ?")
-    .bind(occurredAt, eventId).run();
-  const cursor = await database.prepare("SELECT COALESCE(MAX(id), 0) AS cursor FROM checkin_activity WHERE event_id = ?")
-    .bind(eventId).first<{ cursor: number }>();
-  await recordAdminAudit(request, database, "event.single_sync", eventId, { changes: rawChanges.length });
-  return noStoreJson({ ok: true, cursor: cursor?.cursor ?? 0 });
-}
-
 async function handleCreateLane(request: Request, body: Record<string, unknown>, database: D1Database) {
   if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
   const eventId = safeText(body.eventId, 80);
@@ -860,7 +810,6 @@ export async function POST(request: Request) {
       case "lane_heartbeat": return handleLaneHeartbeat(request, body, database);
       case "scan": return handleScan(request, body, database);
       case "set_attendee": return handleSetAttendee(request, body, database);
-      case "sync_single": return handleSingleSync(request, body, database);
       case "create_lane": return handleCreateLane(request, body, database);
       case "revoke_lane":
       case "rename_lane":

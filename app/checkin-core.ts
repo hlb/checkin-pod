@@ -32,7 +32,8 @@ export type DisplaySettings = {
 
 export type CheckInMode = "single" | "multi";
 
-export type SingleSyncState = {
+/** @deprecated Read only to migrate pre-online single-device events. */
+export type LegacySingleSyncState = {
   eventId: string;
   cursor: number;
   lastSyncedAt: string;
@@ -52,7 +53,8 @@ export type SavedEvent = {
   lastScan?: LastScan;
   revision?: number;
   checkInMode?: CheckInMode;
-  singleSync?: SingleSyncState;
+  /** @deprecated Migrated to sharedEvent when the activity is opened. */
+  singleSync?: LegacySingleSyncState;
   sharedEvent?: import("./shared-checkin").SharedEventConnection;
 };
 
@@ -81,7 +83,7 @@ export type LiveEventSnapshot = {
   cue?: ProjectionCue;
 };
 
-export const CHANNEL_NAME = "checkin-pod-sync";
+export const CHANNEL_NAME = "checkin-pod-event-changes";
 const DB_NAME = "checkin-pod";
 const LEGACY_DB_NAME = "arrival-checkin";
 const DB_VERSION = 2;
@@ -493,7 +495,7 @@ export async function replaceSavedEvent(event: SavedEvent) {
   };
   await withEventWriteLock(() => writeSavedEvent(prepared));
   broadcastEventChange();
-  return { event: prepared, projectionSync: Promise.resolve(true) };
+  return { event: prepared };
 }
 
 export async function mutateSavedEvent(
@@ -509,42 +511,6 @@ export async function mutateSavedEvent(
   });
   broadcastEventChange();
   return updated;
-}
-
-export async function commitScan(rawCode: string, scannedAt = new Date().toISOString()) {
-  const committed = await withEventWriteLock(async () => {
-    const current = await readSavedEvent();
-    if (!current) throw new Error("找不到目前的活動名單，請洽報到人員。");
-    const next = applyScanToEvent(current, rawCode, scannedAt);
-    await writeSavedEvent(next.event);
-    return next;
-  });
-  broadcastEventChange();
-  return { ...committed, projectionSync: Promise.resolve(true) };
-}
-
-export async function commitAttendeeCheckIn(attendeeId: string, checkedInAt: string | null) {
-  const committed = await withEventWriteLock(async () => {
-    const current = await readSavedEvent();
-    if (!current) throw new Error("找不到目前的活動名單，請重新匯入 CSV。");
-    const attendee = current.attendees.find((item) => item.id === attendeeId);
-    if (!attendee) throw new Error("找不到這位來賓。");
-    const updatedAttendee = { ...attendee, checkedInAt };
-    const next: SavedEvent = {
-      ...current,
-      revision: (current.revision ?? 0) + 1,
-      lastScan: checkedInAt
-        ? { kind: "success", attendeeId, at: checkedInAt }
-        : current.lastScan?.attendeeId === attendeeId
-          ? undefined
-          : current.lastScan,
-      attendees: current.attendees.map((item) => item.id === attendeeId ? updatedAttendee : item),
-    };
-    await writeSavedEvent(next);
-    return { event: next, attendee: updatedAttendee };
-  });
-  broadcastEventChange();
-  return { ...committed, projectionSync: Promise.resolve(true) };
 }
 
 export function broadcastEventChange() {

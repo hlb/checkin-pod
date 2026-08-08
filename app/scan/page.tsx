@@ -7,7 +7,6 @@ import {
   CHANNEL_NAME,
   LastScan,
   SavedEvent,
-  commitScan,
   displayValue,
   formatTime,
   getDisplayFields,
@@ -17,14 +16,8 @@ import {
   scanKeysFor,
   writeSavedEvent,
 } from "../checkin-core";
-import { SharedApiError, activateSharedLane, readSharedLane, scanSharedEventWithRetry } from "../shared-checkin";
+import { activateSharedLane, readSharedLane, scanSharedEvent } from "../shared-checkin";
 import type { SharedAttendeeResult, SharedLaneBootstrap, SharedLaneSession } from "../shared-checkin";
-import {
-  appendPendingScan,
-  parsePendingScans,
-  scanQueueKey,
-} from "../scan-queue";
-import type { PendingScan } from "../scan-queue";
 
 type GuestResult = {
   kind: LastScan["kind"];
@@ -85,9 +78,6 @@ export default function ScanPage() {
   const [selectedCameraId, setSelectedCameraId] = useState("");
   const [resultSoundEnabled, setResultSoundEnabled] = useState(false);
   const [laneSession, setLaneSession] = useState<SharedLaneSession | null>(null);
-  const [pendingScanCount, setPendingScanCount] = useState(0);
-  const [queueState, setQueueState] = useState<"idle" | "sending" | "waiting" | "blocked">("idle");
-  const [networkOnline, setNetworkOnline] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -99,11 +89,7 @@ export default function ScanPage() {
   const successAudioRef = useRef<HTMLAudioElement>(null);
   const failureAudioRef = useRef<HTMLAudioElement>(null);
   const resultSoundEnabledRef = useRef(false);
-  const pendingScansRef = useRef<PendingScan[]>([]);
-  const queueBusyRef = useRef(false);
-  const drainScanQueueRef = useRef<() => Promise<void>>(async () => undefined);
   const laneEventId = laneSession?.eventId ?? "";
-  const laneId = laneSession?.laneId ?? "";
 
   const updateCameraList = useCallback((devices: MediaDeviceInfo[]) => {
     const availableCameras = cameraDevicesFrom(devices);
@@ -378,16 +364,6 @@ export default function ScanPage() {
     return () => window.clearTimeout(timer);
   }, [refreshEvent]);
 
-  const persistPendingScans = useCallback((session: SharedLaneSession | null) => {
-    if (!session) return;
-    const key = scanQueueKey(session.eventId, session.laneId);
-    if (pendingScansRef.current.length) {
-      window.localStorage.setItem(key, JSON.stringify(pendingScansRef.current));
-    } else {
-      window.localStorage.removeItem(key);
-    }
-  }, []);
-
   useEffect(() => {
     if (!laneEventId) return;
     const timer = window.setInterval(() => void refreshEvent(), 5_000);
@@ -424,52 +400,6 @@ export default function ScanPage() {
     };
   }, []);
 
-  const drainScanQueue = useCallback(async () => {
-    if (!event || queueBusyRef.current || !pendingScansRef.current.length) return;
-    queueBusyRef.current = true;
-    setQueueState("sending");
-    try {
-      while (pendingScansRef.current.length) {
-        const pending = pendingScansRef.current[0];
-        try {
-          const committed = laneSession
-            ? await scanSharedEventWithRetry(
-                laneSession,
-                pending.code,
-                pending.scannedAt,
-                pending.requestId,
-              ).then((outcome) => ({ event, outcome, projectionSync: Promise.resolve(true) }))
-            : await commitScan(pending.code, pending.scannedAt);
-          if (!laneSession) setEvent(committed.event);
-          showResult({
-            kind: committed.outcome.kind,
-            attendee: committed.outcome.attendee,
-            at: committed.outcome.at,
-          });
-          pendingScansRef.current.shift();
-          persistPendingScans(laneSession);
-          setPendingScanCount(pendingScansRef.current.length);
-          setError("");
-          if (!(await committed.projectionSync)) {
-            setError("報到紀錄已保存在這台電腦，但投影牆暫時無法同步。");
-          }
-        } catch (caught) {
-          const retryable = caught instanceof SharedApiError && caught.retryable;
-          setQueueState(retryable ? "waiting" : "blocked");
-          setError(caught instanceof Error ? caught.message : "無法保存報到紀錄，請洽報到人員。");
-          break;
-        }
-      }
-    } finally {
-      queueBusyRef.current = false;
-      if (!pendingScansRef.current.length) setQueueState("idle");
-    }
-  }, [event, laneSession, persistPendingScans, showResult]);
-
-  useEffect(() => {
-    drainScanQueueRef.current = drainScanQueue;
-  }, [drainScanQueue]);
-
   const processScan = useCallback((rawCode: string) => {
     if (!event) return;
     const code = rawCode.trim().replace(/[\r\n]+$/g, "");
@@ -477,42 +407,22 @@ export default function ScanPage() {
     if (scanInputTimerRef.current) clearTimeout(scanInputTimerRef.current);
     scanInputTimerRef.current = null;
     if (inputRef.current) inputRef.current.value = "";
-    const appended = appendPendingScan(pendingScansRef.current, {
-      code,
-      scannedAt: new Date().toISOString(),
-      requestId: crypto.randomUUID(),
-    });
-    if (!appended) {
-      setError("等待送出的掃描已達 100 筆，請先檢查網路連線。");
+    if (!laneSession) {
+      setError("活動尚未連接伺服器。請由報到人員重新載入活動。");
       return;
     }
-    persistPendingScans(laneSession);
-    setPendingScanCount(pendingScansRef.current.length);
-    void drainScanQueue();
-  }, [drainScanQueue, event, laneSession, persistPendingScans]);
-
-  useEffect(() => {
-    if (!laneEventId || !laneId) return;
-    const key = scanQueueKey(laneEventId, laneId);
-    pendingScansRef.current = parsePendingScans(window.localStorage.getItem(key));
-    setPendingScanCount(pendingScansRef.current.length);
-    if (pendingScansRef.current.length) window.setTimeout(() => void drainScanQueueRef.current(), 0);
-  }, [laneEventId, laneId]);
-
-  useEffect(() => {
-    const updateNetwork = () => {
-      const online = navigator.onLine;
-      setNetworkOnline(online);
-      if (online && pendingScansRef.current.length) void drainScanQueue();
-    };
-    updateNetwork();
-    window.addEventListener("online", updateNetwork);
-    window.addEventListener("offline", updateNetwork);
-    return () => {
-      window.removeEventListener("online", updateNetwork);
-      window.removeEventListener("offline", updateNetwork);
-    };
-  }, [drainScanQueue]);
+    void scanSharedEvent(
+      laneSession,
+      code,
+      new Date().toISOString(),
+      crypto.randomUUID(),
+    ).then((outcome) => {
+      showResult({ kind: outcome.kind, attendee: outcome.attendee, at: outcome.at });
+      setError("");
+    }).catch((caught) => {
+      setError(caught instanceof Error ? caught.message : "無法送出報到紀錄。請檢查網路後重新掃描。");
+    });
+  }, [event, laneSession, showResult]);
 
   useEffect(() => {
     if (!cameraActive || !barcodeDetectorRef.current) return;
@@ -564,14 +474,6 @@ export default function ScanPage() {
   };
 
   const selectedFields = useMemo(() => (event ? getDisplayFields(event) : []), [event]);
-  const queueStatus = useMemo(() => {
-    if (!networkOnline) return { kind: "waiting", title: "網路離線", detail: `${pendingScanCount} 筆掃描保存在這台設備` };
-    if (queueState === "sending") return { kind: "sending", title: "正在同步", detail: `尚有 ${pendingScanCount} 筆掃描` };
-    if (queueState === "waiting") return { kind: "waiting", title: "等待重新連線", detail: `${pendingScanCount} 筆掃描尚未送出` };
-    if (queueState === "blocked") return { kind: "blocked", title: "工作站需要處理", detail: `${pendingScanCount} 筆掃描仍安全保留` };
-    return { kind: "idle", title: "同步正常", detail: pendingScanCount ? `尚有 ${pendingScanCount} 筆掃描` : "所有掃描都已送達" };
-  }, [networkOnline, pendingScanCount, queueState]);
-
   if (!ready) {
     return (
       <main className="guest-screen guest-loading">
@@ -626,17 +528,8 @@ export default function ScanPage() {
         <div className="scan-settings-popover">
           <div className="scan-settings-heading">
             <strong>鏡頭掃描</strong>
-            <span>{laneSession ? `${laneSession.laneName} · 多工作站同步中` : "USB 掃描器仍可同時使用"}</span>
+            <span>{laneSession ? `${laneSession.laneName} · 即時連線` : "USB 掃描器仍可同時使用"}</span>
           </div>
-          {laneSession ? (
-            <div className={`scan-queue-health is-${queueStatus.kind}`} aria-live="polite">
-              <i aria-hidden="true" />
-              <div><strong>{queueStatus.title}</strong><span>{queueStatus.detail}</span></div>
-              {pendingScanCount > 0 && networkOnline && queueState !== "sending" ? (
-                <button type="button" onClick={() => void drainScanQueue()}>立即重試</button>
-              ) : null}
-            </div>
-          ) : null}
           <div className="camera-controls">
             {cameraDevices.length > 1 ? (
               <label className="camera-selector">

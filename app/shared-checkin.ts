@@ -119,8 +119,6 @@ export type SharedEventHistoryItem = {
   expiresAt: string;
 };
 
-export type SingleCheckInChange = Pick<Attendee, "id" | "checkedInAt">;
-
 export class SharedApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -136,9 +134,6 @@ export class SharedApiError extends Error {
     this.code = code;
   }
 
-  get retryable() {
-    return this.status === 0 || this.status === 408 || this.status === 429 || this.status >= 500;
-  }
 }
 
 type JsonResponse = Record<string, unknown>;
@@ -148,13 +143,13 @@ async function apiJson<T extends JsonResponse>(input: RequestInfo | URL, init?: 
   try {
     response = await fetch(input, init);
   } catch {
-    throw new SharedApiError("網路暫時中斷，掃描已保留並會自動重試。", 0, "network_error");
+    throw new SharedApiError("網路連線中斷，這次掃描尚未送出。請恢復連線後重新掃描。", 0, "network_error");
   }
   const body = await response.json().catch(() => ({})) as T & { error?: string };
   if (!response.ok) {
     const messages: Record<string, string> = {
       unauthorized: "工作站授權失效，請由中控台重新建立工作站連結。",
-      event_not_ready: "活動名單尚未完成同步，請稍後再試。",
+      event_not_ready: "活動名單尚未準備完成，請稍後再試。",
       event_not_found: "找不到這場活動，請重新匯入名單。",
       attendee_limit_exceeded: `活動最多支援 ${MAX_SHARED_ATTENDEES.toLocaleString()} 位來賓。`,
       duplicate_scan_key: "名單中有重複的 QR Code 或報到碼，請修正 CSV 後再匯入。",
@@ -230,60 +225,13 @@ export async function importSharedEvent(
   return { ...beginning, cursor: finalized.cursor };
 }
 
-export function checkInStateSignature(attendees: Pick<Attendee, "id" | "checkedInAt">[]) {
-  let hash = 2_166_136_261;
-  let checked = 0;
-  for (const attendee of attendees) {
-    if (attendee.checkedInAt) checked += 1;
-    const value = `${attendee.id}\u0000${attendee.checkedInAt ?? ""}\u0000`;
-    for (let index = 0; index < value.length; index += 1) {
-      hash ^= value.charCodeAt(index);
-      hash = Math.imul(hash, 16_777_619) >>> 0;
-    }
-  }
-  return `${attendees.length}:${checked}:${hash.toString(16).padStart(8, "0")}`;
-}
-
-export function diffSingleCheckInState(
-  localAttendees: Pick<Attendee, "id" | "checkedInAt">[],
-  serverAttendees: Pick<Attendee, "id" | "checkedInAt">[],
-) {
-  const serverStates = new Map(serverAttendees.map((attendee) => [attendee.id, attendee.checkedInAt]));
-  return localAttendees.flatMap<SingleCheckInChange>((attendee) =>
-    serverStates.has(attendee.id) && serverStates.get(attendee.id) === attendee.checkedInAt
-      ? []
-      : [{ id: attendee.id, checkedInAt: attendee.checkedInAt }],
-  );
-}
-
-export function restoreSingleAttendeeScanKeys(attendees: Attendee[], importedAt: string) {
+export function restoreAttendeeScanKeys(attendees: Attendee[], importedAt: string) {
   const parsed = toAttendees(attendees.map((attendee) => attendee.original), importedAt);
   return attendees.map((attendee, index) => ({
     ...attendee,
     qrValue: parsed[index]?.qrValue ?? "",
     scanKeys: parsed[index]?.scanKeys ?? [],
   }));
-}
-
-export async function syncSingleCheckInState(
-  eventId: string,
-  changes: SingleCheckInChange[],
-  onProgress?: (synced: number, total: number) => void,
-) {
-  let cursor = 0;
-  let synced = 0;
-  const syncId = crypto.randomUUID();
-  for (const chunk of chunkItems(changes)) {
-    const result = await apiJson<{ cursor: number }>("/api/shared-checkin", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "sync_single", eventId, syncId: `${syncId}:${synced}`, changes: chunk }),
-    });
-    cursor = Math.max(cursor, result.cursor);
-    synced += chunk.length;
-    onProgress?.(synced, changes.length);
-  }
-  return { cursor };
 }
 
 export async function readSharedLane(session: SharedLaneSession) {
@@ -325,27 +273,6 @@ export async function scanSharedEvent(
       requestId,
     }),
   });
-}
-
-export async function scanSharedEventWithRetry(
-  session: SharedLaneSession,
-  code: string,
-  scannedAt = new Date().toISOString(),
-  requestId = crypto.randomUUID(),
-  attempts = 3,
-  retryDelayMs = 250,
-) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await scanSharedEvent(session, code, scannedAt, requestId);
-    } catch (error) {
-      lastError = error;
-      if (!(error instanceof SharedApiError) || !error.retryable || attempt === attempts - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
-    }
-  }
-  throw lastError;
 }
 
 export async function setSharedAttendeeCheckIn(
@@ -539,42 +466,21 @@ export async function fetchCompleteSharedRoster(eventId = "") {
 export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | null> {
   const restored = await fetchCompleteSharedRoster(eventId);
   if (!restored.event) return null;
-  const restoredAt = new Date().toISOString();
-  if (restored.event.syncMode === "single") {
-    const attendees = restoreSingleAttendeeScanKeys(restored.attendees, restored.event.importedAt);
-    return {
-      version: 1,
-      fileName: restored.event.fileName,
-      eventName: restored.event.eventName,
-      importedAt: restored.event.importedAt,
-      headers: restored.event.headers,
-      attendees,
-      sourceRowCount: restored.event.total,
-      excludedRowCount: 0,
-      displaySettings: {
-        selectedFields: restored.event.selectedFields,
-        backgroundColor: restored.event.backgroundColor,
-        projectionPrivacy: restored.event.projectionPrivacy,
-      },
-      revision: restored.event.cursor,
-      checkInMode: "single",
-      singleSync: {
-        eventId: restored.event.eventId,
-        cursor: restored.event.cursor,
-        lastSyncedAt: restoredAt,
-        lastSyncedSignature: checkInStateSignature(attendees),
-      },
-    };
-  }
-  const lane = await createSharedLane(restored.event.eventId, "復原中控台");
+  const lane = await createSharedLane(
+    restored.event.eventId,
+    restored.event.syncMode === "single" ? "單機中控台" : "復原中控台",
+  );
   await activateSharedLane(lane);
+  const attendees = restored.event.syncMode === "single"
+    ? restoreAttendeeScanKeys(restored.attendees, restored.event.importedAt)
+    : restored.attendees;
   return {
     version: 1,
     fileName: restored.event.fileName,
     eventName: restored.event.eventName,
     importedAt: restored.event.importedAt,
     headers: restored.event.headers,
-    attendees: restored.attendees,
+    attendees,
     sourceRowCount: restored.event.total,
     excludedRowCount: 0,
     displaySettings: {
@@ -583,7 +489,7 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
       projectionPrivacy: restored.event.projectionPrivacy,
     },
     revision: restored.event.cursor,
-    checkInMode: "multi",
+    checkInMode: restored.event.syncMode,
     sharedEvent: {
       eventId: restored.event.eventId,
       laneId: lane.laneId,

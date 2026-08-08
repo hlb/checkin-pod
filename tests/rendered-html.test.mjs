@@ -210,7 +210,7 @@ test("adds browser security headers to public and administrative routes", async 
   assert.match(response.headers.get("permissions-policy") ?? "", /camera=\(self\)/);
 });
 
-test("wires persistence, scanner, secured projection sync, and event controls", async () => {
+test("wires persistence, scanner, secured projection feed, and event controls", async () => {
   const [page, scanPage, projectionPage, planetVariants, sharedRoute, sharedSql, sharedClient, core, auth, laneAuth, styles, benchmarkStyles, workerSource, viteConfig, stressScript, sampleZip, largeSampleZip, successAudio, failureAudio] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/scan/page.tsx", import.meta.url), "utf8"),
@@ -242,8 +242,8 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(page, /兩份範例共用同一組測試 QR Code/);
   assert.match(page, /登出中控台/);
   assert.match(page, /單機報到/);
-  assert.match(page, /每 5 分鐘同步/);
-  assert.match(page, /立即同步/);
+  assert.match(page, /每次報到立即寫入伺服器/);
+  assert.doesNotMatch(page, /每 5 分鐘|立即同步/);
   assert.match(page, /活動歷史/);
   assert.match(page, /載入活動/);
   assert.match(page, /改活動名稱/);
@@ -253,8 +253,8 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(page, /onPaste/);
   assert.match(page, /importMode.*single/s);
   assert.match(page, /Checkin Pod/);
-  assert.match(page, /commitScan/);
-  assert.match(scanPage, /commitScan/);
+  assert.doesNotMatch(page, /commitScan|scan-queue/);
+  assert.doesNotMatch(scanPage, /commitScan|scan-queue|pendingScans/);
   assert.match(scanPage, /scanSharedEvent/);
   assert.match(scanPage, /LANE_SESSION_KEY/);
   assert.doesNotMatch(page, /indexedDB\.open/);
@@ -262,7 +262,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(core, /DB_VERSION = 2/);
   assert.match(core, /const DB_NAME = "checkin-pod"/);
   assert.match(core, /const LEGACY_DB_NAME = "arrival-checkin"/);
-  assert.match(core, /CHANNEL_NAME = "checkin-pod-sync"/);
+  assert.match(core, /CHANNEL_NAME = "checkin-pod-event-changes"/);
   assert.match(core, /WRITE_LOCK_NAME = "checkin-pod-write"/);
   assert.match(core, /navigator\.locks/);
   assert.match(core, /applyScanToEvent/);
@@ -300,7 +300,7 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(sharedRoute, /hasValidAdminSession/);
   assert.match(sharedRoute, /sha256Hex\(laneToken\)/);
   assert.match(sharedRoute, /SHARED_CHANGE_PAGE_SIZE \+ 1/);
-  assert.match(sharedRoute, /sync_single/);
+  assert.doesNotMatch(sharedRoute, /sync_single/);
   assert.match(sharedRoute, /sync_mode/);
   assert.match(sharedRoute, /case "events"/);
   assert.match(sharedRoute, /activate_event/);
@@ -323,9 +323,10 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.doesNotMatch(laneResultBuilder, /email:|phone:|approvalStatus:/);
   const scanClient = sharedClient.slice(
     sharedClient.indexOf("export async function scanSharedEvent("),
-    sharedClient.indexOf("export async function scanSharedEventWithRetry"),
+    sharedClient.indexOf("export async function setSharedAttendeeCheckIn"),
   );
   assert.doesNotMatch(scanClient, /laneToken/);
+  assert.doesNotMatch(sharedClient, /scanSharedEventWithRetry|syncSingleCheckInState/);
   assert.match(laneAuth, /HttpOnly/);
   assert.match(laneAuth, /SameSite=Strict/);
   assert.match(sharedSql, /checked_in_at IS NULL/);
