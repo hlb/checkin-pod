@@ -65,6 +65,57 @@ function hasSameOrigin(request: Request, url: URL) {
   return request.headers.get("sec-fetch-site")?.toLowerCase() === "same-origin";
 }
 
+function hasExplicitCrossSiteSource(request: Request, url: URL) {
+  const origin = request.headers.get("origin")?.trim();
+  if (origin && origin !== "null") {
+    try {
+      return new URL(origin).origin !== url.origin;
+    } catch {
+      return true;
+    }
+  }
+
+  const referer = request.headers.get("referer")?.trim();
+  if (referer) {
+    try {
+      return new URL(referer).origin !== url.origin;
+    } catch {
+      return true;
+    }
+  }
+
+  return request.headers.get("sec-fetch-site")?.toLowerCase() === "cross-site";
+}
+
+function loginCsrfCookieName(secure: boolean) {
+  return secure ? "__Host-checkin_pod_login_csrf" : "checkin_pod_login_csrf";
+}
+
+function loginCsrfCookie(token: string, secure: boolean, maxAge = 600) {
+  return `${loginCsrfCookieName(secure)}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+}
+
+function requestCookie(request: Request, name: string) {
+  for (const part of (request.headers.get("cookie") ?? "").split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
+    return part.slice(separator + 1).trim();
+  }
+  return "";
+}
+
+function newLoginCsrfToken() {
+  return `${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+async function hasValidLoginCsrf(request: Request, formData: URLSearchParams, secure: boolean) {
+  const supplied = (formData.get("csrf_token") ?? "").slice(0, 128);
+  const expected = requestCookie(request, loginCsrfCookieName(secure)).slice(0, 128);
+  if (!supplied || !expected) return false;
+  const [suppliedHash, expectedHash] = await Promise.all([sha256Hex(supplied), sha256Hex(expected)]);
+  return constantTimeEqual(suppliedHash, expectedHash);
+}
+
 function redirectToAdmin(cookies?: string | string[]) {
   const headers = new Headers({ location: "/admin", "cache-control": "no-store" });
   for (const cookie of typeof cookies === "string" ? [cookies] : cookies ?? []) {
@@ -166,7 +217,8 @@ async function recordWorkerAudit(database: D1Database, actor: string, action: st
   }
 }
 
-function adminLoginPage(message = "", status = 200, extraHeaders?: HeadersInit) {
+function adminLoginPage(message = "", status = 200, extraHeaders?: HeadersInit, secure = false) {
+  const csrfToken = newLoginCsrfToken();
   const error = message
     ? `<p class="error" role="alert">${message}</p>`
     : `<p class="hint">輸入管理員帳號與密碼後繼續</p>`;
@@ -188,6 +240,7 @@ function adminLoginPage(message = "", status = 200, extraHeaders?: HeadersInit) 
     <h1>Checkin Pod</h1>
     ${error}
     <form method="post" action="/admin-auth">
+      <input name="csrf_token" type="hidden" value="${csrfToken}" />
       <label for="username">管理員帳號</label>
       <input id="username" name="username" type="text" autocomplete="username" maxlength="120" required />
       <label for="password">管理員密碼</label>
@@ -203,6 +256,7 @@ function adminLoginPage(message = "", status = 200, extraHeaders?: HeadersInit) 
 </body>
 </html>`;
   const headers = new Headers(extraHeaders);
+  headers.append("set-cookie", loginCsrfCookie(csrfToken, secure));
   headers.set("cache-control", "no-store, max-age=0");
   headers.set("content-type", "text/html; charset=utf-8");
   headers.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
@@ -261,7 +315,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
         await deactivateSharedProjection(env.DB);
         await recordWorkerAudit(env.DB, session.sub, "admin.logout", request);
       } catch {
-        return adminLoginPage("無法結束公開投影，請稍後再試。", 503);
+        return adminLoginPage("無法結束公開投影，請稍後再試。", 503, undefined, secure);
       }
     }
     return redirectToAdmin(clearAdminCookies(secure));
@@ -269,24 +323,32 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
 
   if (url.pathname === "/admin-auth") {
     if (request.method !== "POST") return redirectToAdmin();
-    if (!hasSameOrigin(request, url)) return adminLoginPage("登入來源無效。", 403);
+    if (hasExplicitCrossSiteSource(request, url)) {
+      return adminLoginPage("登入來源無效。", 403, undefined, secure);
+    }
+    const sameOrigin = hasSameOrigin(request, url);
     if (!hasAdminCredentials(env)) {
-      return adminLoginPage("管理員帳號或密碼尚未設定。", 503);
+      return adminLoginPage("管理員帳號或密碼尚未設定。", 503, undefined, secure);
     }
     if (!env.SESSION_SECRET || env.SESSION_SECRET.length < 32) {
-      return adminLoginPage("SESSION_SECRET 需要至少 32 個字元。", 503);
+      return adminLoginPage("SESSION_SECRET 需要至少 32 個字元。", 503, undefined, secure);
     }
     if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
-      return adminLoginPage("登入資料格式無效。", 415);
+      return adminLoginPage("登入資料格式無效。", 415, undefined, secure);
     }
     const rawForm = await readLimitedText(request, 4_096);
     if (!rawForm.ok) {
       return adminLoginPage(
         rawForm.reason === "too_large" ? "登入資料過大。" : "登入資料無效。",
         rawForm.reason === "too_large" ? 413 : 400,
+        undefined,
+        secure,
       );
     }
     const formData = new URLSearchParams(rawForm.value);
+    if (!sameOrigin && !(await hasValidLoginCsrf(request, formData, secure))) {
+      return adminLoginPage("登入來源無效。", 403, undefined, secure);
+    }
     const suppliedUsername = (formData.get("username") ?? "").trim().slice(0, 120);
     const rateKeys = [
       `admin-login:account:${suppliedUsername.toLowerCase() || "unknown"}`,
@@ -295,7 +357,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     const rateChecks = await Promise.all(rateKeys.map((key) =>
       withinRateLimit(env.LOGIN_RATE_LIMITER, key, 10, 60_000)));
     if (rateChecks.some((allowed) => !allowed)) {
-      return adminLoginPage("登入嘗試次數已達上限，請在 60 秒後再試。", 429, { "retry-after": "60" });
+      return adminLoginPage("登入嘗試次數已達上限，請在 60 秒後再試。", 429, { "retry-after": "60" }, secure);
     }
     const suppliedPassword = formData.get("password");
     const credential = configuredAdminCredential(env, suppliedUsername);
@@ -304,18 +366,18 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
       sha256Hex(credential?.password ?? env.SESSION_SECRET),
     ]);
     if (!credential || !constantTimeEqual(suppliedPasswordHash, expectedPasswordHash)) {
-      return adminLoginPage("帳號或密碼不正確，請再試一次。", 401);
+      return adminLoginPage("帳號或密碼不正確，請再試一次。", 401, undefined, secure);
     }
     const token = await createAdminSessionToken(env.SESSION_SECRET, credential.username);
     await recordWorkerAudit(env.DB, credential.username, "admin.login", request);
-    return redirectToAdmin(adminCookie(token, secure));
+    return redirectToAdmin([adminCookie(token, secure), loginCsrfCookie("", secure, 0)]);
   }
 
   if (isAdminPath(url.pathname)) {
     if (!hasAdminCredentials(env) || !env.SESSION_SECRET) {
-      return adminLoginPage("管理員登入設定尚未完成。", 503);
+      return adminLoginPage("管理員登入設定尚未完成。", 503, undefined, secure);
     }
-    if (!(await hasValidAdminSession(request, env.SESSION_SECRET))) return adminLoginPage();
+    if (!(await hasValidAdminSession(request, env.SESSION_SECRET))) return adminLoginPage("", 200, undefined, secure);
   }
 
   if (url.pathname === "/_vinext/image") {

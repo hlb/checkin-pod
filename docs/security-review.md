@@ -117,7 +117,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 - production HTTPS 加入一年 HSTS。
 - 相機權限只允許 self；microphone、geolocation、payment、USB 與 serial 關閉。
 - logout 只接受 POST。來源驗證優先比對 Origin；Origin 缺少或為 `null` 時才依序驗證同來源 Referer 與 `Sec-Fetch-Site: same-origin`。
-- 登入 POST 使用相同來源驗證。跨站 Origin 永遠優先拒絕，不會被 Fetch Metadata 覆蓋。
+- 登入頁另外設定 10 分鐘、HttpOnly、SameSite=Strict 的 host-only CSRF Cookie，並在表單帶入相同的 244-bit 隨機 token。Origin 與 Fetch Metadata 都缺少的隔離式瀏覽器只能用有效雙重提交 token 登入。明確的跨站 Origin、Referer 或 `Sec-Fetch-Site: cross-site` 仍優先拒絕。
 - lane GET 保持唯讀。last seen 使用經認證的 POST heartbeat。
 
 目前 CSP 為了 Vinext runtime 仍允許 inline script/style。它提供來源、frame、object、form 與 connect 邊界，但不是 strict nonce CSP。框架支援穩定後應改用 nonce/hash。
@@ -170,7 +170,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 |---|---|
 | SQL injection | SQL values 使用 D1 parameter binding。動態 `IN` 只依陣列長度產生 `?`。未發現直接注入路徑。 |
 | XSS | React escaping；source 沒有 `eval`、`new Function`、`innerHTML` 或 `dangerouslySetInnerHTML`。全站 CSP 提供防禦深度。 |
-| CSRF | Admin / lane Cookie 使用 SameSite=Strict。登入與登出使用 Origin 優先的 same-origin 驗證；無 Origin 的瀏覽器導覽只接受同來源 Referer 或 Fetch Metadata。JSON mutations 不接受 form encoding。 |
+| CSRF | Admin / lane Cookie 使用 SameSite=Strict。登入與登出使用 Origin 優先的 same-origin 驗證；登入另有短效雙重提交 CSRF token，支援缺少來源 metadata 的隔離式瀏覽器。JSON mutations 不接受 form encoding。 |
 | SSRF | 未發現由使用者控制任意遠端 URL 的 server fetch。圖片 optimizer 使用同站 asset binding。 |
 | Path traversal | API 不接受 filesystem path。CSV 與背景圖片在瀏覽器處理。 |
 | Secret storage | 管理秘密在 environment；admin / lane session 在 HttpOnly Cookie；D1 只保存 lane token hash。 |
@@ -204,7 +204,7 @@ production dependencies 的 audit 結果為 0。完整 dependency audit 剩下 `
 | `npm audit --omit=dev` | Pass | 0 vulnerabilities |
 | `npm audit` | Mitigated | 2 High；同一個無 patched release 的 `image-size` parser dependency path |
 | migration tests | Pass | expiry、composite FKs、cascade、legacy removal |
-| auth / render tests | Pass | signed expiry session、Cookie、Origin、同來源 Fetch Metadata fallback、跨站拒絕、logout、headers、legacy absence |
+| auth / render tests | Pass | signed expiry session、Cookie、Origin、同來源 Fetch Metadata fallback、雙重提交 CSRF token、跨站拒絕、logout、headers、legacy absence |
 | rate / privacy tests | Pass | 429、Retry-After、匿名 projection、lane DTO allowlist |
 | CSV export tests | Pass | 公式與控制字元前綴中和 |
 | tracked secret pattern scan | Pass | 沒有實際 credential；只保留範例名稱與測試值 |

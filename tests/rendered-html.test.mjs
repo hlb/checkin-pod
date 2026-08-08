@@ -122,6 +122,28 @@ test("accepts same-origin browser login metadata when Origin is unavailable", as
     body: loginBody,
   });
   assert.equal(conflictingOriginResponse.status, 403);
+
+  const loginPage = await render("/admin");
+  const loginHtml = await loginPage.text();
+  const csrfToken = loginHtml.match(/name="csrf_token" type="hidden" value="([a-f0-9]+)"/)?.[1] ?? "";
+  const csrfCookie = loginPage.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
+  assert.ok(csrfToken);
+  assert.ok(csrfCookie);
+
+  const isolatedBrowserResponse = await render("/admin-auth", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      origin: "null",
+      cookie: csrfCookie,
+    },
+    body: new URLSearchParams({
+      username: "test-admin",
+      password: "test-password",
+      csrf_token: csrfToken,
+    }),
+  });
+  assert.equal(isolatedBrowserResponse.status, 303);
 });
 
 test("logging out ends the public projection without deleting browser records", async () => {
