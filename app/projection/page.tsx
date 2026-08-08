@@ -29,7 +29,7 @@ type SharedProjectionEvent = {
 
 const POLL_INTERVAL_MS = 700;
 const ARRIVAL_DISPLAY_MS = 3600;
-const PARTICLE_COLORS = ["#FFD84A", "#57E5E5", "#FF7B68", "#A89BFF", "#6EE7A1"];
+const PARTICLE_COLORS = ["#FFD23F", "#FF9E1B", "#FF6B5E", "#57D98A", "#F4F1E8"];
 
 function halton(index: number, base: number) {
   let fraction = 1;

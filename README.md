@@ -40,6 +40,7 @@ Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位�
 - Vinext、Vite
 - Cloudflare Workers runtime
 - Cloudflare D1 / SQLite
+- Inter Variable、Noto Sans TC Variable（自託管網頁字型）
 - 經人工檢查的 forward-only SQL migrations
 - IndexedDB、Local Storage、BroadcastChannel
 
@@ -208,4 +209,4 @@ reset 會永久刪除活動、參加者、QR scan keys、工作站、報到紀�
 
 ## 授權
 
-本專案採用 [Apache License 2.0](LICENSE)。此授權允許商業使用、修改與散布，並提供明確的專利授權。散布時需要保留授權與著作權標示，修改過的檔案需要標示變更。第三方素材與相依套件依各自的授權條款使用。
+本專案採用 [Apache License 2.0](LICENSE)。此授權允許商業使用、修改與散布，並提供明確的專利授權。散布時需要保留授權與著作權標示，修改過的檔案需要標示變更。Inter 與 Noto Sans TC 使用 SIL Open Font License 1.1。完整資訊請看 [第三方授權聲明](THIRD_PARTY_NOTICES.md)。

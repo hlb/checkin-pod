@@ -16,6 +16,8 @@
     "sample:generate": "node scripts/generate-sample-package.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/noto-sans-tc": "^5.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

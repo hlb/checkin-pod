@@ -27,7 +27,7 @@ export async function generateMetadata(): Promise<Metadata> {
       description: "Checkin Pod 多工作站報到效能與防重複實測。",
       type: "website",
       url: origin ? `${origin}/benchmark` : undefined,
-      images: imageUrl ? [{ url: imageUrl, width: 1734, height: 907, alt: "Checkin Pod 萬人多入口效能實測" }] : undefined,
+      images: imageUrl ? [{ url: imageUrl, width: 1731, height: 909, alt: "Checkin Pod 萬人多入口效能實測" }] : undefined,
     },
     twitter: {
       card: "summary_large_image",
