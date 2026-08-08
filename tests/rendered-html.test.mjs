@@ -162,6 +162,8 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(page, /活動歷史/);
   assert.match(page, /載入活動/);
   assert.match(page, /fetchSharedEventHistory/);
+  assert.match(page, /永久刪除活動/);
+  assert.match(page, /onPaste/);
   assert.match(page, /importMode.*single/s);
   assert.match(page, /Checkin Pod/);
   assert.match(page, /commitScan/);
@@ -208,6 +210,8 @@ test("wires persistence, scanner, secured projection sync, and event controls", 
   assert.match(sharedRoute, /case "events"/);
   assert.match(sharedRoute, /activate_event/);
   assert.match(sharedRoute, /deactivate_event/);
+  assert.match(sharedRoute, /deletion_confirmation_mismatch/);
+  assert.match(sharedRoute, /isEventDeletionConfirmed/);
   assert.match(sharedSql, /checked_in_at IS NULL/);
   assert.match(sharedSql, /CHECK\(total >= 0 AND total <= 10000\)/);
   assert.match(policy, /input\.total > 200/);

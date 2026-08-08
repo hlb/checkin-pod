@@ -45,7 +45,9 @@ import {
   applySharedScanResult,
   checkInStateSignature,
   createSharedLane,
+  deleteSharedEvent,
   diffSingleCheckInState,
+  eventDeletionConfirmation,
   fetchSharedChanges,
   fetchSharedEventHistory,
   fetchActiveSharedEventSummary,
@@ -290,6 +292,10 @@ export default function Home() {
   const [eventHistory, setEventHistory] = useState<SharedEventHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyActionId, setHistoryActionId] = useState("");
+  const [deleteCandidate, setDeleteCandidate] = useState<SharedEventHistoryItem | null>(null);
+  const [deletionInput, setDeletionInput] = useState("");
+  const [deletionPasted, setDeletionPasted] = useState(false);
+  const [deletionCopyLabel, setDeletionCopyLabel] = useState("複製確認字串");
   const scanInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
@@ -1158,6 +1164,63 @@ export default function Home() {
     }
   };
 
+  const openDeleteDialog = (historyEvent: SharedEventHistoryItem) => {
+    setDeleteCandidate(historyEvent);
+    setDeletionInput("");
+    setDeletionPasted(false);
+    setDeletionCopyLabel("複製確認字串");
+  };
+
+  const closeDeleteDialog = () => {
+    if (deleteCandidate && historyActionId === deleteCandidate.eventId) return;
+    setDeleteCandidate(null);
+    setDeletionInput("");
+    setDeletionPasted(false);
+  };
+
+  const copyDeletionConfirmation = async () => {
+    if (!deleteCandidate) return;
+    try {
+      await navigator.clipboard.writeText(eventDeletionConfirmation(deleteCandidate.eventId));
+      setDeletionCopyLabel("已複製，請貼到下方");
+    } catch {
+      setDeletionCopyLabel("請選取字串並複製");
+    }
+  };
+
+  const confirmDeleteHistoryEvent = async () => {
+    if (!deleteCandidate) return;
+    const confirmation = eventDeletionConfirmation(deleteCandidate.eventId);
+    if (!deletionPasted || deletionInput !== confirmation) return;
+    const deletedEventId = deleteCandidate.eventId;
+    const deletesCurrentEvent = deletedEventId === currentServerEventId;
+    setHistoryActionId(deletedEventId);
+    setError("");
+    try {
+      await deleteSharedEvent(deletedEventId, deletionInput);
+      if (deletesCurrentEvent) {
+        await clearSavedEvent();
+        await clearLiveEvent().catch(() => undefined);
+        broadcastEventChange();
+        setEvent(null);
+        setBackgroundImageDataUrl(null);
+        setScanResult(null);
+        setSearch("");
+        setFilter("all");
+      }
+      if (recoverableEvent?.eventId === deletedEventId) setRecoverableEvent(null);
+      setEventHistory((history) => history.filter((item) => item.eventId !== deletedEventId));
+      setDeleteCandidate(null);
+      setDeletionInput("");
+      setDeletionPasted(false);
+      await refreshEventHistory();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法刪除這場活動。");
+    } finally {
+      setHistoryActionId("");
+    }
+  };
+
   const stopLane = async (lane: SharedLaneRecord) => {
     if (!event?.sharedEvent || !window.confirm(`確定停用「${lane.laneName}」？這台設備的舊連結會立即失效。`)) return;
     setLaneActionId(lane.laneId);
@@ -1845,13 +1908,23 @@ export default function Home() {
                     <i style={{ width: `${progress}%` }} />
                   </div>
                 </div>
-                <button
-                  type="button"
-                  disabled={isCurrent || Boolean(historyActionId)}
-                  onClick={() => void loadHistoryEvent(historyEvent)}
-                >
-                  {isCurrent ? "目前活動" : historyActionId === historyEvent.eventId ? "載入中…" : "載入活動"}
-                </button>
+                <div className="event-history-actions">
+                  <button
+                    type="button"
+                    disabled={isCurrent || Boolean(historyActionId)}
+                    onClick={() => void loadHistoryEvent(historyEvent)}
+                  >
+                    {isCurrent ? "目前活動" : historyActionId === historyEvent.eventId ? "處理中…" : "載入活動"}
+                  </button>
+                  <button
+                    className="history-delete-button"
+                    type="button"
+                    disabled={Boolean(historyActionId)}
+                    onClick={() => openDeleteDialog(historyEvent)}
+                  >
+                    刪除
+                  </button>
+                </div>
               </article>
             );
           })}
@@ -1864,6 +1937,59 @@ export default function Home() {
         </div>
         {eventHistory.length >= 100 ? <p className="event-history-limit">顯示最近 100 場活動</p> : null}
       </section>
+
+      {deleteCandidate ? (
+        <div
+          className="event-delete-overlay"
+          role="presentation"
+          onKeyDown={(keyboardEvent) => {
+            if (keyboardEvent.key === "Escape") closeDeleteDialog();
+          }}
+          onMouseDown={(mouseEvent) => {
+            if (mouseEvent.target === mouseEvent.currentTarget) closeDeleteDialog();
+          }}
+        >
+          <section className="event-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="event-delete-title" aria-describedby="event-delete-description">
+            <span className="event-delete-mark" aria-hidden="true">!</span>
+            <p className="section-kicker">Permanent deletion</p>
+            <h2 id="event-delete-title">永久刪除活動</h2>
+            <p id="event-delete-description">
+              「{deleteCandidate.fileName.replace(/\.csv$/i, "")}」的名單、報到紀錄與工作站連結會從伺服器永久刪除。
+            </p>
+            {deleteCandidate.eventId === currentServerEventId ? <p className="event-delete-current-note">這是目前裝置使用的活動。本機名單也會一併清除。</p> : null}
+            <label className="event-delete-confirmation">
+              <span>步驟 1：複製確認字串</span>
+              <div>
+                <code>{eventDeletionConfirmation(deleteCandidate.eventId)}</code>
+                <button type="button" onClick={() => void copyDeletionConfirmation()}>{deletionCopyLabel}</button>
+              </div>
+            </label>
+            <label className="event-delete-input">
+              <span>步驟 2：貼上確認字串</span>
+              <input
+                autoFocus
+                value={deletionInput}
+                onChange={(changeEvent) => setDeletionInput(changeEvent.target.value)}
+                onPaste={() => setDeletionPasted(true)}
+                placeholder="請貼上確認字串"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <div className="event-delete-actions">
+              <button type="button" onClick={closeDeleteDialog} disabled={historyActionId === deleteCandidate.eventId}>取消</button>
+              <button
+                className="confirm-delete-button"
+                type="button"
+                disabled={!deletionPasted || deletionInput !== eventDeletionConfirmation(deleteCandidate.eventId) || historyActionId === deleteCandidate.eventId}
+                onClick={() => void confirmDeleteHistoryEvent()}
+              >
+                {historyActionId === deleteCandidate.eventId ? "刪除中…" : "永久刪除"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       <footer>
         <p><span className="brand-mark small">P</span> Checkin Pod · 活動報到輔助機</p>

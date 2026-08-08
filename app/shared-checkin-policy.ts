@@ -3,6 +3,14 @@ export const MAX_SHARED_LANES = 100;
 export const SHARED_IMPORT_CHUNK_SIZE = 200;
 export const SHARED_CHANGE_PAGE_SIZE = 500;
 
+export function eventDeletionConfirmation(eventId: string) {
+  return `永久刪除活動 ${eventId}`;
+}
+
+export function isEventDeletionConfirmed(eventId: string, confirmation: string) {
+  return confirmation === eventDeletionConfirmation(eventId);
+}
+
 export function chunkItems<T>(items: T[], size = SHARED_IMPORT_CHUNK_SIZE) {
   if (!Number.isInteger(size) || size < 1) throw new Error("chunk size must be a positive integer");
   const chunks: T[][] = [];

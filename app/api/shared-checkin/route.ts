@@ -2,7 +2,12 @@ import { env } from "cloudflare:workers";
 import { hasValidAdminSession, sha256Hex } from "../../admin-auth";
 import type { Attendee, OriginalRow, ProjectionCueType } from "../../checkin-core";
 import { scanKeysFor } from "../../checkin-core";
-import { MAX_SHARED_ATTENDEES, MAX_SHARED_LANES, SHARED_CHANGE_PAGE_SIZE } from "../../shared-checkin-policy";
+import {
+  MAX_SHARED_ATTENDEES,
+  MAX_SHARED_LANES,
+  SHARED_CHANGE_PAGE_SIZE,
+  isEventDeletionConfirmed,
+} from "../../shared-checkin-policy";
 import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../../shared-checkin-sql";
 import { getD1 } from "../../../db";
 
@@ -574,7 +579,12 @@ async function handleAdminMutation(request: Request, body: Record<string, unknow
     return noStoreJson({ ok: true });
   }
   if (body.action === "delete_event") {
-    await database.prepare("DELETE FROM checkin_events WHERE event_id = ?").bind(eventId).run();
+    const confirmation = safeText(body.confirmation, 160);
+    if (!isEventDeletionConfirmed(eventId, confirmation)) {
+      return noStoreJson({ error: "deletion_confirmation_mismatch" }, { status: 400 });
+    }
+    const result = await database.prepare("DELETE FROM checkin_events WHERE event_id = ?").bind(eventId).run();
+    if (!result.meta.changes) return noStoreJson({ error: "event_not_found" }, { status: 404 });
     return noStoreJson({ ok: true });
   }
   return noStoreJson({ error: "invalid_payload" }, { status: 400 });

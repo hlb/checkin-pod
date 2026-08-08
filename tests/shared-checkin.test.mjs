@@ -24,6 +24,10 @@ import {
   scanQueueKey,
 } from "../app/scan-queue.ts";
 import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../app/shared-checkin-sql.ts";
+import {
+  eventDeletionConfirmation,
+  isEventDeletionConfirmed,
+} from "../app/shared-checkin-policy.ts";
 
 function openSharedDatabase() {
   const database = new DatabaseSync(":memory:");
@@ -57,6 +61,14 @@ test("bounds shared events at 10,000 attendees and chunks imports without loss",
 
 test("bounds each event at 100 active workstations", () => {
   assert.equal(MAX_SHARED_LANES, 100);
+});
+
+test("requires the exact event-specific confirmation string for permanent deletion", () => {
+  const confirmation = eventDeletionConfirmation("event-1");
+  assert.equal(confirmation, "永久刪除活動 event-1");
+  assert.equal(isEventDeletionConfirmed("event-1", confirmation), true);
+  assert.equal(isEventDeletionConfirmed("event-1", ""), false);
+  assert.equal(isEventDeletionConfirmed("event-1", eventDeletionConfirmation("event-2")), false);
 });
 
 test("detects single-device check-in differences before server sync", () => {
@@ -251,6 +263,36 @@ test("keeps attendee totals and check-in progress separate in event history", ()
     { eventId: "event-1", total: 2, arrived: 1 },
     { eventId: "event-2", total: 1, arrived: 1 },
   ]);
+  database.close();
+});
+
+test("permanently deleting an event cascades through its server records", () => {
+  const database = openSharedDatabase();
+  insertEvent(database);
+  database.prepare(`INSERT INTO checkin_attendees
+    (event_id, attendee_id, position, name, original_json)
+    VALUES ('event-1', 'guest-1', 0, '王小明', '{}')`).run();
+  database.prepare(`INSERT INTO checkin_scan_keys
+    (event_id, key_hash, attendee_id)
+    VALUES ('event-1', 'hash-1', 'guest-1')`).run();
+  database.prepare(`INSERT INTO checkin_lanes
+    (lane_id, event_id, name, token_hash, created_at)
+    VALUES ('lane-1', 'event-1', '入口 A', 'token-hash-1', '2026-08-08T00:00:00.000Z')`).run();
+  database.prepare(`INSERT INTO checkin_activity
+    (event_id, attendee_id, lane_id, outcome, occurred_at, request_id)
+    VALUES ('event-1', 'guest-1', 'lane-1', 'success', '2026-08-08T01:00:00.000Z', 'request-1')`).run();
+
+  database.prepare("DELETE FROM checkin_events WHERE event_id = ?").run("event-1");
+
+  for (const table of [
+    "checkin_events",
+    "checkin_attendees",
+    "checkin_scan_keys",
+    "checkin_lanes",
+    "checkin_activity",
+  ]) {
+    assert.equal(database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count, 0);
+  }
   database.close();
 });
 

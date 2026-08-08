@@ -589,12 +589,33 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .event-history-progress strong { color: #35483b; font-size: 11px; }
 .history-progress-track { height: 6px; margin-top: 8px; overflow: hidden; background: #dfe4dc; border-radius: 999px; }
 .history-progress-track i { height: 100%; display: block; background: var(--orange); border-radius: inherit; }
-.event-history-item > button { min-width: 86px; min-height: 38px; padding: 0 12px; color: #fff; background: var(--forest); border: 1px solid var(--forest); border-radius: 9px; font-size: 10px; font-weight: 850; }
-.event-history-item > button:disabled { color: #6c776f; background: #e5e8e2; border-color: #d7dbd4; }
+.event-history-actions { display: flex; align-items: center; gap: 7px; }
+.event-history-actions button { min-width: 76px; min-height: 38px; padding: 0 12px; color: #fff; background: var(--forest); border: 1px solid var(--forest); border-radius: 9px; font-size: 10px; font-weight: 850; }
+.event-history-actions button:disabled { color: #6c776f; background: #e5e8e2; border-color: #d7dbd4; }
+.event-history-actions .history-delete-button { min-width: 60px; color: #aa3c2d; background: #fff9f6; border-color: #e7b5aa; }
+.event-history-actions .history-delete-button:disabled { color: #a89089; background: #f1ece9; border-color: #ded5d1; }
 .event-history-empty { min-height: 120px; display: grid; place-content: center; justify-items: center; gap: 6px; color: #8a918a; text-align: center; }
 .event-history-empty strong { color: #657067; font-size: 12px; }
 .event-history-empty span { font-size: 10px; }
 .event-history-limit { margin: 10px 0 0; color: var(--muted); font-size: 9px; text-align: right; }
+
+.event-delete-overlay { position: fixed; inset: 0; z-index: 120; padding: 24px; display: grid; place-items: center; background: rgba(15,20,17,.67); backdrop-filter: blur(6px); }
+.event-delete-dialog { width: min(560px, 100%); max-height: calc(100svh - 48px); padding: 31px; overflow-y: auto; position: relative; color: var(--ink); background: #f8f7f2; border: 1px solid rgba(255,255,255,.72); border-radius: 20px 20px 20px 7px; box-shadow: 0 30px 90px rgba(0,0,0,.3); }
+.event-delete-mark { width: 42px; height: 42px; position: absolute; top: 27px; right: 28px; display: grid; place-items: center; color: #fff; background: #b94735; border-radius: 13px 13px 13px 4px; font-size: 22px; font-weight: 900; }
+.event-delete-dialog h2 { margin: 5px 54px 0 0; font-family: Georgia, "Noto Serif TC", serif; font-size: 32px; }
+.event-delete-dialog > p:not(.section-kicker) { max-width: 460px; margin: 12px 0 0; color: #626a62; font-size: 12px; line-height: 1.8; }
+.event-delete-dialog .event-delete-current-note { padding: 9px 11px; color: #963d2f; background: #f8e5df; border-radius: 8px; font-weight: 750; }
+.event-delete-confirmation, .event-delete-input { margin-top: 22px; display: block; }
+.event-delete-confirmation > span, .event-delete-input > span { display: block; margin-bottom: 8px; color: #59635b; font-size: 10px; font-weight: 850; }
+.event-delete-confirmation > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.event-delete-confirmation code { min-height: 46px; padding: 12px; display: flex; align-items: center; overflow-wrap: anywhere; color: #7c2e22; background: #efe7e2; border: 1px solid #e0d2ca; border-radius: 9px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; user-select: all; }
+.event-delete-confirmation button { min-width: 118px; padding: 0 12px; color: var(--forest); background: #fff; border: 1px solid #cbd2ca; border-radius: 9px; font-size: 9px; font-weight: 850; }
+.event-delete-input input { width: 100%; min-height: 46px; padding: 0 12px; color: var(--ink); background: #fff; border: 1px solid #cbd2ca; border-radius: 9px; outline: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.event-delete-input input:focus { border-color: #b94735; box-shadow: 0 0 0 3px rgba(185,71,53,.12); }
+.event-delete-actions { margin-top: 25px; display: flex; justify-content: flex-end; gap: 9px; }
+.event-delete-actions button { min-width: 96px; min-height: 42px; padding: 0 15px; color: #5f685f; background: transparent; border: 1px solid #cbd1ca; border-radius: 9px; font-size: 10px; font-weight: 850; }
+.event-delete-actions .confirm-delete-button { color: #fff; background: #ad3e2f; border-color: #ad3e2f; }
+.event-delete-actions .confirm-delete-button:disabled { color: #918c88; background: #e5e1de; border-color: #d9d4d0; }
 
 footer { width: min(1180px, calc(100% - 56px)); margin: 0 auto; padding: 24px 0 30px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: #7d847c; font-size: 10px; }
 footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
@@ -808,7 +829,7 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .search-box { flex: 1; }
   .guest-table th:nth-child(3), .guest-table td:nth-child(3) { display: none; }
   .event-history-item { grid-template-columns: minmax(200px, 1fr) minmax(200px, .8fr); }
-  .event-history-item > button { grid-column: 2; justify-self: end; }
+  .event-history-actions { grid-column: 2; justify-self: end; }
   .display-settings-section { grid-template-columns: 1fr 200px; }
   .selected-field-summary { grid-column: 1; grid-row: 2; }
   .field-picker { grid-column: 2; grid-row: 1 / span 2; }
@@ -879,7 +900,13 @@ footer p { margin: 0; display: flex; align-items: center; gap: 9px; }
   .guest-section { padding: 48px 0 70px; }
   .event-history-heading { align-items: flex-start; flex-direction: column; }
   .event-history-item { grid-template-columns: 1fr; gap: 15px; }
-  .event-history-item > button { grid-column: auto; justify-self: stretch; }
+  .event-history-actions { grid-column: auto; justify-self: stretch; }
+  .event-history-actions button { flex: 1; }
+  .event-delete-overlay { padding: 16px; }
+  .event-delete-dialog { max-height: calc(100svh - 32px); padding: 25px 20px; }
+  .event-delete-confirmation > div { grid-template-columns: 1fr; }
+  .event-delete-confirmation button { min-height: 42px; }
+  .event-delete-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .toolbar-controls { align-items: stretch; flex-direction: column; }
   .filter-tabs { width: 100%; }
   .filter-tabs button { flex: 1; }
