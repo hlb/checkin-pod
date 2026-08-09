@@ -138,19 +138,52 @@ export function normalizeHeader(value: string) {
     .replace(/[()]/g, "");
 }
 
-const SERVER_OPERATIONAL_FIELDS = new Set(
-  Object.values(FIELD_ALIASES).flat().map((field) => normalizeHeader(field)),
+const SERVER_SECRET_SCAN_FIELDS = new Set(
+  [
+    ...FIELD_ALIASES.qr,
+    ...FIELD_ALIASES.ticketId,
+    ...FIELD_ALIASES.alternateScanKeys,
+  ].map((field) => normalizeHeader(field)),
 );
 
-/** Keep only fields required for check-in or explicitly selected for staff display. */
+/** Keep only explicitly selected display fields and never retain replayable scan credentials. */
 export function minimizeOriginalRow(original: OriginalRow, selectedFields: string[]) {
   const selected = new Set(selectedFields.map((field) => normalizeHeader(field)));
   return Object.fromEntries(
     Object.entries(original).filter(([field]) => {
       const normalized = normalizeHeader(field);
-      return SERVER_OPERATIONAL_FIELDS.has(normalized) || selected.has(normalized);
+      return selected.has(normalized) && !SERVER_SECRET_SCAN_FIELDS.has(normalized);
     }),
   );
+}
+
+function selectedFieldMatches(selectedFields: string[], aliases: readonly string[]) {
+  const selected = new Set(selectedFields.map((field) => normalizeHeader(field)));
+  return aliases.some((alias) => selected.has(normalizeHeader(alias)));
+}
+
+/** Build the only attendee shape allowed to cross the server import boundary. */
+export function attendeeForServerImport(
+  attendee: Attendee,
+  selectedFields: string[],
+  position: number,
+) {
+  return {
+    // Never let a source-system identifier or an older PII-derived browser ID
+    // cross the D1 boundary. Position is scoped to this newly created event.
+    id: `guest-${position + 1}`,
+    name: attendee.name,
+    email: selectedFieldMatches(selectedFields, FIELD_ALIASES.email) ? attendee.email : "",
+    phone: selectedFieldMatches(selectedFields, FIELD_ALIASES.phone) ? attendee.phone : "",
+    ticket: selectedFieldMatches(selectedFields, FIELD_ALIASES.ticket) ? attendee.ticket : "",
+    approvalStatus: selectedFieldMatches(selectedFields, FIELD_ALIASES.approval)
+      ? attendee.approvalStatus
+      : "",
+    scanKeys: attendee.scanKeys,
+    checkedInAt: attendee.checkedInAt,
+    original: minimizeOriginalRow(attendee.original, selectedFields),
+    position,
+  };
 }
 
 export function parseCsv(source: string): { headers: string[]; rows: OriginalRow[] } {
@@ -267,7 +300,7 @@ export function toAttendees(rows: OriginalRow[], importedAt: string): Attendee[]
       if (value) scanKeys.add(value.toLowerCase());
     }
     return {
-      id: `${externalId || qrValue || email || "guest"}-${index}`,
+      id: `guest-${index + 1}`,
       name,
       email,
       phone: getField(original, FIELD_ALIASES.phone),

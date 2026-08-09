@@ -49,7 +49,9 @@ test("server-renders the check-in application shell", async () => {
   const html = await response.text();
   assert.match(html, /<html[^>]*lang="zh-Hant"/i);
   assert.match(html, /<title>Checkin Pod｜活動報到輔助機<\/title>/i);
+  assert.match(html, /loading-brand-mark[^>]*>P</);
   assert.match(html, /正在還原這台裝置的報到紀錄/);
+  assert.doesNotMatch(html, /loading-mark[^>]*>到</);
 });
 
 test("provides separate admin and public benchmark, scanner, and projection routes", async () => {
@@ -68,7 +70,7 @@ test("provides separate admin and public benchmark, scanner, and projection rout
   const benchmarkHtml = await benchmarkResponse.text();
   assert.match(benchmarkHtml, /10,000 位來賓/);
   assert.match(benchmarkHtml, /50 個入口/);
-  assert.match(benchmarkHtml, /21\/21/);
+  assert.match(benchmarkHtml, /23\/23/);
   assert.doesNotMatch(benchmarkHtml, /工作人員密碼/);
   assert.match(await scanResponse.text(), /正在準備掃描器/);
   assert.match(await projectionResponse.text(), /啟動全場能量牆/);
@@ -352,7 +354,13 @@ test("wires persistence, scanner, secured projection feed, and event controls", 
   assert.match(sharedRoute, /purgeExpiredEvents/);
   assert.match(sharedRoute, /readLimitedText\(request, 4_000_000\)/);
   assert.match(sharedRoute, /utf8ByteLength\(originalJson\)/);
-  assert.match(sharedClient, /minimizeOriginalRow/);
+  assert.match(sharedClient, /attendeeForServerImport/);
+  assert.match(sharedRoute, /attendeeForServerImport/);
+  assert.match(sharedRoute, /attendeeId !== minimized\.id/);
+  assert.match(sharedRoute, /function importedOriginalRow/);
+  assert.match(sharedRoute, /ATOMIC_SCAN_ACTIVITY_SQL/);
+  assert.match(sharedRoute, /IDEMPOTENT_SET_ACTIVITY_SQL/);
+  assert.match(sharedRoute, /database\.batch/);
   const laneResultBuilder = sharedRoute.slice(
     sharedRoute.indexOf("function laneAttendeeFromRow"),
     sharedRoute.indexOf("async function scanResponse"),
@@ -374,6 +382,16 @@ test("wires persistence, scanner, secured projection feed, and event controls", 
     sharedRoute.indexOf("async function handleProjectionGet"),
   );
   assert.doesNotMatch(changesHandler, /SET active/);
+  const projectionMetadata = sharedRoute.slice(
+    sharedRoute.indexOf("function projectionEventMetadata"),
+    sharedRoute.indexOf("async function findAdminEvent"),
+  );
+  assert.match(projectionMetadata, /eventId:/);
+  assert.match(projectionMetadata, /eventName:/);
+  assert.doesNotMatch(projectionMetadata, /fileName:/);
+  const getHandler = sharedRoute.slice(sharedRoute.indexOf("export async function GET"));
+  assert.doesNotMatch(getHandler, /ensureSchema|purgeExpiredEvents/);
+  assert.match(sharedClient, /action: "initialize"/);
   assert.match(auth, /HttpOnly/);
   assert.match(auth, /SameSite=Strict/);
   assert.match(auth, /SESSION_MAX_AGE_SECONDS/);

@@ -87,7 +87,7 @@
   max-width: 700px;
   margin: 0;
   font-family: var(--font-sans);
-  font-size: clamp(46px, 5.3vw, 76px);
+  font-size: clamp(46px, 4.4vw, 62px);
   line-height: 1.12;
   font-weight: 585;
   font-variation-settings: "opsz" 32;

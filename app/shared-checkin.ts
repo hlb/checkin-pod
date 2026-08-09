@@ -8,7 +8,7 @@ import type {
   ProjectionCueType,
   SavedEvent,
 } from "./checkin-core.ts";
-import { minimizeOriginalRow, toAttendees } from "./checkin-core.ts";
+import { attendeeForServerImport } from "./checkin-core.ts";
 import {
   MAX_SHARED_ATTENDEES,
   MAX_SHARED_LANES,
@@ -137,6 +137,7 @@ export class SharedApiError extends Error {
 }
 
 type JsonResponse = Record<string, unknown>;
+let adminInitialization: Promise<void> | null = null;
 
 async function apiJson<T extends JsonResponse>(input: RequestInfo | URL, init?: RequestInit) {
   let response: Response;
@@ -166,6 +167,20 @@ async function apiJson<T extends JsonResponse>(input: RequestInfo | URL, init?: 
     );
   }
   return body;
+}
+
+export function initializeSharedCheckin() {
+  if (!adminInitialization) {
+    adminInitialization = apiJson<{ ok: true }>("/api/shared-checkin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "initialize" }),
+    }).then(() => undefined).catch((error) => {
+      adminInitialization = null;
+      throw error;
+    });
+  }
+  return adminInitialization;
 }
 
 export async function importSharedEvent(
@@ -203,14 +218,11 @@ export async function importSharedEvent(
       body: JSON.stringify({
         action: "upload_chunk",
         eventId: beginning.eventId,
-        attendees: chunk.map((attendee, chunkIndex) => ({
-          ...attendee,
-          original: minimizeOriginalRow(
-            attendee.original,
-            event.displaySettings?.selectedFields ?? [],
-          ),
-          position: uploaded + chunkIndex,
-        })),
+        attendees: chunk.map((attendee, chunkIndex) => attendeeForServerImport(
+          attendee,
+          event.displaySettings?.selectedFields ?? [],
+          uploaded + chunkIndex,
+        )),
       }),
     });
     uploaded += chunk.length;
@@ -223,15 +235,6 @@ export async function importSharedEvent(
     body: JSON.stringify({ action: "finalize_import", eventId: beginning.eventId }),
   });
   return { ...beginning, cursor: finalized.cursor };
-}
-
-export function restoreAttendeeScanKeys(attendees: Attendee[], importedAt: string) {
-  const parsed = toAttendees(attendees.map((attendee) => attendee.original), importedAt);
-  return attendees.map((attendee, index) => ({
-    ...attendee,
-    qrValue: parsed[index]?.qrValue ?? "",
-    scanKeys: parsed[index]?.scanKeys ?? [],
-  }));
 }
 
 export async function readSharedLane(session: SharedLaneSession) {
@@ -294,6 +297,7 @@ export async function setSharedAttendeeCheckIn(
 }
 
 export async function fetchSharedChanges(eventId: string, after: number) {
+  await initializeSharedCheckin();
   const query = new URLSearchParams({ mode: "changes", eventId, after: String(after) });
   return apiJson<{
     changes: SharedChange[];
@@ -376,6 +380,7 @@ export async function createSharedLane(eventId: string, laneName: string) {
 }
 
 export async function fetchSharedLanes(eventId: string) {
+  await initializeSharedCheckin();
   const query = new URLSearchParams({ mode: "lanes", eventId });
   return apiJson<{ lanes: SharedLaneRecord[] }>(`/api/shared-checkin?${query}`).then((body) => body.lanes);
 }
@@ -406,6 +411,7 @@ export async function rotateSharedLane(eventId: string, laneId: string) {
 }
 
 export async function fetchActiveSharedEventSummary(eventId = "") {
+  await initializeSharedCheckin();
   const query = new URLSearchParams({ mode: "admin_summary" });
   if (eventId) query.set("eventId", eventId);
   return apiJson<{ event: SharedAdminEventMetadata | null }>(`/api/shared-checkin?${query}`)
@@ -413,6 +419,7 @@ export async function fetchActiveSharedEventSummary(eventId = "") {
 }
 
 export async function fetchSharedEventHistory() {
+  await initializeSharedCheckin();
   return apiJson<{ events: SharedEventHistoryItem[] }>("/api/shared-checkin?mode=events")
     .then((body) => body.events);
 }
@@ -434,6 +441,7 @@ export async function renameSharedEvent(eventId: string, eventName: string) {
 }
 
 export async function fetchSharedRosterPage(eventId = "", afterPosition = -1) {
+  await initializeSharedCheckin();
   const query = new URLSearchParams({ mode: "roster", afterPosition: String(afterPosition), limit: "500" });
   if (eventId) query.set("eventId", eventId);
   return apiJson<{
@@ -471,16 +479,13 @@ export async function restoreSharedEvent(eventId = ""): Promise<SavedEvent | nul
     restored.event.syncMode === "single" ? "單機中控台" : "復原中控台",
   );
   await activateSharedLane(lane);
-  const attendees = restored.event.syncMode === "single"
-    ? restoreAttendeeScanKeys(restored.attendees, restored.event.importedAt)
-    : restored.attendees;
   return {
     version: 1,
     fileName: restored.event.fileName,
     eventName: restored.event.eventName,
     importedAt: restored.event.importedAt,
     headers: restored.event.headers,
-    attendees,
+    attendees: restored.attendees,
     sourceRowCount: restored.event.total,
     excludedRowCount: 0,
     displaySettings: {

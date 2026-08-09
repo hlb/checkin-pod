@@ -12,10 +12,15 @@ import {
   applySharedScanResult,
   assertSharedCapacity,
   chunkItems,
-  restoreAttendeeScanKeys,
   scanSharedEvent,
 } from "../app/shared-checkin.ts";
-import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../app/shared-checkin-sql.ts";
+import {
+  ATOMIC_CHECK_IN_SQL,
+  ATOMIC_SCAN_ACTIVITY_SQL,
+  IDEMPOTENT_SET_ACTIVITY_SQL,
+  IDEMPOTENT_SET_ATTENDEE_SQL,
+  SHARED_SCHEMA_SQL,
+} from "../app/shared-checkin-sql.ts";
 import {
   defaultEventName,
   eventDeletionConfirmation,
@@ -36,6 +41,29 @@ function insertEvent(database, total = 1) {
       total, status, active, created_at, updated_at)
     VALUES (?, ?, '[]', '[]', '#0E0F12', ?, 'active', 1, ?, ?)`)
     .run("event-1", "guests.csv", total, "2026-08-08T00:00:00.000Z", "2026-08-08T00:00:00.000Z");
+}
+
+function insertLane(database, laneId = "lane-1") {
+  database.prepare(`INSERT INTO checkin_lanes
+    (lane_id, event_id, name, token_hash, created_at)
+    VALUES (?, 'event-1', '入口', ?, '2026-08-08T00:00:00.000Z')`)
+    .run(laneId, `hash-${laneId}`);
+}
+
+function runAtomicScan(database, { attendeeId = "guest-1", laneId, requestId, occurredAt }) {
+  database.exec("BEGIN");
+  try {
+    database.prepare(ATOMIC_CHECK_IN_SQL)
+      .run(occurredAt, laneId, requestId, "event-1", attendeeId, "event-1", requestId);
+    database.prepare(ATOMIC_SCAN_ACTIVITY_SQL)
+      .run("event-1", attendeeId, laneId, requestId, occurredAt, requestId, "event-1", attendeeId);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+  return database.prepare(`SELECT outcome, checked_in_at FROM checkin_activity
+    WHERE event_id = 'event-1' AND request_id = ?`).get(requestId);
 }
 
 test("bounds shared events at 10,000 attendees and chunks imports without loss", () => {
@@ -129,30 +157,6 @@ test("posts every scan directly to the server with its request ID", async () => 
   }
 });
 
-test("restores QR scan keys for a server-restored single-device activity", () => {
-  const restored = restoreAttendeeScanKeys([{
-    id: "guest-1-0",
-    name: "王小明",
-    email: "guest@example.com",
-    phone: "",
-    ticket: "一般票",
-    approvalStatus: "approved",
-    qrValue: "",
-    scanKeys: [],
-    checkedInAt: "2026-08-08T01:00:00.000Z",
-    original: {
-      guest_id: "guest-1",
-      name: "王小明",
-      email: "guest@example.com",
-      qr_code_url: "https://example.com/check-in?pk=QR-001",
-    },
-  }], "2026-08-08T00:00:00.000Z");
-
-  assert.equal(restored[0].qrValue, "https://example.com/check-in?pk=QR-001");
-  assert.ok(restored[0].scanKeys.includes("qr-001"));
-  assert.equal(restored[0].checkedInAt, "2026-08-08T01:00:00.000Z");
-});
-
 test("returns duplicate results from the authoritative server response", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({
@@ -228,23 +232,67 @@ test("enforces the 10,000 attendee capacity in SQLite itself", () => {
   database.close();
 });
 
-test("allows exactly one winner when two clients atomically check in the same attendee", () => {
+test("atomically stores one winner, duplicate outcomes, and stable request retries", () => {
+  const database = openSharedDatabase();
+  insertEvent(database);
+  insertLane(database, "lane-a");
+  insertLane(database, "lane-b");
+  database.prepare(`INSERT INTO checkin_attendees
+    (event_id, attendee_id, position, name, original_json)
+    VALUES ('event-1', 'guest-1', 0, '王小明', '{}')`).run();
+
+  const first = runAtomicScan(database, {
+    laneId: "lane-a", requestId: "request-a", occurredAt: "2026-08-08T01:00:00.000Z",
+  });
+  const retry = runAtomicScan(database, {
+    laneId: "lane-a", requestId: "request-a", occurredAt: "2026-08-08T01:00:00.500Z",
+  });
+  const second = runAtomicScan(database, {
+    laneId: "lane-b", requestId: "request-b", occurredAt: "2026-08-08T01:00:01.000Z",
+  });
+  const stored = database.prepare(`SELECT checked_in_at, checked_in_lane_id, checked_in_request_id
+    FROM checkin_attendees WHERE event_id = 'event-1' AND attendee_id = 'guest-1'`).get();
+
+  assert.equal(first.outcome, "success");
+  assert.equal(retry.outcome, "success");
+  assert.equal(second.outcome, "duplicate");
+  assert.equal(stored.checked_in_at, "2026-08-08T01:00:00.000Z");
+  assert.equal(stored.checked_in_lane_id, "lane-a");
+  assert.equal(stored.checked_in_request_id, "request-a");
+  assert.equal(database.prepare(`SELECT COUNT(*) AS count FROM checkin_activity
+    WHERE event_id = 'event-1' AND request_id = 'request-a'`).get().count, 1);
+  database.close();
+});
+
+test("manual check-in and undo keep attendee state and activity in one transaction", () => {
   const database = openSharedDatabase();
   insertEvent(database);
   database.prepare(`INSERT INTO checkin_attendees
     (event_id, attendee_id, position, name, original_json)
     VALUES ('event-1', 'guest-1', 0, '王小明', '{}')`).run();
+  const apply = (checkedInAt, requestId) => {
+    const occurredAt = "2026-08-08T02:00:00.000Z";
+    database.exec("BEGIN");
+    database.prepare(IDEMPOTENT_SET_ATTENDEE_SQL)
+      .run(checkedInAt, requestId, "event-1", "guest-1", "event-1", requestId);
+    database.prepare(IDEMPOTENT_SET_ACTIVITY_SQL)
+      .run(checkedInAt ? "success" : "undo", occurredAt, requestId, "event-1", "guest-1");
+    database.exec("COMMIT");
+  };
 
-  const update = database.prepare(ATOMIC_CHECK_IN_SQL);
-  const first = update.all("2026-08-08T01:00:00.000Z", "lane-a", "event-1", "guest-1");
-  const second = update.all("2026-08-08T01:00:00.001Z", "lane-b", "event-1", "guest-1");
-  const stored = database.prepare(`SELECT checked_in_at, checked_in_lane_id
+  apply("2026-08-08T01:59:00.000Z", "manual-check-in");
+  apply(null, "manual-undo");
+  apply("2026-08-08T01:59:00.000Z", "manual-check-in");
+
+  const attendee = database.prepare(`SELECT checked_in_at, checked_in_request_id
     FROM checkin_attendees WHERE event_id = 'event-1' AND attendee_id = 'guest-1'`).get();
-
-  assert.equal(first.length, 1);
-  assert.equal(second.length, 0);
-  assert.equal(stored.checked_in_at, "2026-08-08T01:00:00.000Z");
-  assert.equal(stored.checked_in_lane_id, "lane-a");
+  assert.equal(attendee.checked_in_at, null, "replaying the old request must not re-check in after undo");
+  assert.equal(attendee.checked_in_request_id, "manual-undo");
+  assert.deepEqual(database.prepare(`SELECT request_id, outcome FROM checkin_activity
+    WHERE event_id = 'event-1' ORDER BY id`).all().map((row) => ({ ...row })), [
+    { request_id: "manual-check-in", outcome: "success" },
+    { request_id: "manual-undo", outcome: "undo" },
+  ]);
   database.close();
 });
 
@@ -424,6 +472,7 @@ test("SQL migrations add retention and relational integrity while removing the l
     readFile(new URL("../drizzle/0005_true_zaran.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0006_blue_toxin.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0007_reset_production.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0008_atomic_private_scan.sql", import.meta.url), "utf8"),
   ]);
   const database = new DatabaseSync(":memory:");
   const apply = (source) => {
@@ -475,6 +524,40 @@ test("SQL migrations add retention and relational integrity while removing the l
   assert.ok(rebuiltTables.includes("checkin_lanes"));
   assert.ok(rebuiltTables.includes("checkin_activity"));
   assert.ok(rebuiltTables.includes("checkin_admin_audit"));
+
+  database.prepare(`INSERT INTO checkin_events
+    (event_id, file_name, event_name, headers_json, selected_fields_json, background_color,
+      sync_mode, total, status, active, created_at, updated_at)
+    VALUES ('event-1', 'private.csv', 'Private', '["name","email","qr_code_url","company"]',
+      '["company"]', '#0E0F12', 'multi', 1, 'active', 1,
+      '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z')`).run();
+  database.prepare(`INSERT INTO checkin_attendees
+    (event_id, attendee_id, position, name, email, checked_in_at, original_json)
+    VALUES ('event-1', 'secret@example.com-0', 0, '王小明', 'secret@example.com',
+      '2026-08-08T01:00:00.000Z',
+      '{"name":"王小明","email":"secret@example.com","qr_code_url":"https://example.test/?pk=secret","company":"Example"}')`).run();
+  database.prepare(`INSERT INTO checkin_lanes
+    (lane_id, event_id, name, token_hash, created_at)
+    VALUES ('lane-1', 'event-1', '入口', 'lane-hash', '2026-08-08T00:00:00.000Z')`).run();
+  database.prepare(`INSERT INTO checkin_scan_keys
+    (event_id, key_hash, attendee_id) VALUES ('event-1', 'scan-hash', 'secret@example.com-0')`).run();
+  database.prepare(`INSERT INTO checkin_activity
+    (event_id, attendee_id, lane_id, outcome, checked_in_at, occurred_at, request_id)
+    VALUES ('event-1', 'secret@example.com-0', 'lane-1', 'success',
+      '2026-08-08T01:00:00.000Z', '2026-08-08T01:00:00.000Z', 'request-1')`).run();
+
+  apply(migrations[8]);
+  const migratedAttendee = database.prepare(`SELECT attendee_id, email, checked_in_request_id, original_json
+    FROM checkin_attendees WHERE event_id = 'event-1'`).get();
+  assert.equal(migratedAttendee.attendee_id, "guest-1");
+  assert.equal(migratedAttendee.email, "");
+  assert.equal(migratedAttendee.checked_in_request_id, null);
+  assert.deepEqual(JSON.parse(migratedAttendee.original_json), { company: "Example" });
+  assert.equal(database.prepare(`SELECT attendee_id FROM checkin_scan_keys
+    WHERE event_id = 'event-1'`).get().attendee_id, "guest-1");
+  assert.equal(database.prepare(`SELECT attendee_id FROM checkin_activity
+    WHERE event_id = 'event-1'`).get().attendee_id, "guest-1");
+  assert.deepEqual(database.prepare("PRAGMA foreign_key_check").all(), []);
 
   const resetSql = await readFile(new URL("../scripts/reset-d1.sql", import.meta.url), "utf8");
   database.exec("PRAGMA foreign_keys = ON");

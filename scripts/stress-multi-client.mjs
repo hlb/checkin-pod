@@ -146,7 +146,7 @@ function attendee(index) {
   const serial = String(index).padStart(5, "0");
   const qr = `STRESS-QR-${serial}`;
   return {
-    id: `stress-guest-${serial}`,
+    id: `guest-${index + 1}`,
     position: index,
     name: `Stress Guest ${serial}`,
     email: `stress-${serial}@example.com`,
@@ -155,12 +155,9 @@ function attendee(index) {
     approvalStatus: "approved",
     checkedInAt: null,
     original: {
-      guest_id: `stress-guest-${serial}`,
       name: `Stress Guest ${serial}`,
       email: `stress-${serial}@example.com`,
-      qr_code_url: qr,
       ticket_name: index % 10 === 0 ? "VIP" : "General",
-      approval_status: "approved",
     },
     scanKeys: [qr.toLowerCase(), `stress-${serial}@example.com`, `stress-guest-${serial}`],
   };
@@ -461,6 +458,11 @@ try {
   check("伺服器可分頁復原完整名單與報到狀態",
     recoveredRoster.metadata?.total === options.attendees && recoveredRosterCount === options.attendees && recoveredCheckedInCount === options.attendees,
     `${recoveredRosterCount.toLocaleString()} roster · ${recoveredCheckedInCount.toLocaleString()} checked in`);
+  const privateRoster = recoveredRoster.attendees.every((item, index) =>
+    item.id === `guest-${index + 1}`
+      && !Object.keys(item.original ?? {}).some((field) => /qr|guest_id|ticket_id|報到碼|訂單編號|報名序號|檢查碼/i.test(field)));
+  check("D1 名單使用不透明 ID 且不保存專用掃描憑證明文", privateRoster,
+    privateRoster ? `${recoveredRosterCount.toLocaleString()} opaque records` : "found a raw identifier or scan credential");
   check("工作站列表統計加總與成功活動一致", finalLaneList.response.ok && laneReportedSuccess === options.attendees,
     `${laneReportedSuccess.toLocaleString()} lane successes`);
   check("投影初始資料有完整星球數", projectionCount === options.attendees,
@@ -470,7 +472,7 @@ try {
 } finally {
   if (eventId && adminCookie) {
     const removed = await post({
-      action: "delete_event", eventId, confirmation: `永久刪除活動 ${eventId}`,
+      action: "delete_event", eventId, confirmation: eventId,
     }).catch(() => null);
     cleanupSucceeded = Boolean(removed?.response.ok);
   }

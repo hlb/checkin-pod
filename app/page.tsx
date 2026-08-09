@@ -1111,9 +1111,16 @@ export default function Home() {
 
   if (!ready) {
     return (
-      <main className="loading-shell" aria-label="正在讀取報到資料">
-        <div className="loading-mark">到</div>
-        <p>正在還原這台裝置的報到紀錄…</p>
+      <main className="loading-shell" aria-label="正在讀取報到資料" aria-busy="true">
+        <div className="loading-brand" aria-hidden="true">
+          <span className="brand-mark loading-brand-mark">P</span>
+          <span className="loading-brand-copy">
+            <strong>Checkin Pod</strong>
+            <span>活動報到輔助機</span>
+          </span>
+        </div>
+        <div className="loading-track" aria-hidden="true"><span /></div>
+        <p role="status">正在還原這台裝置的報到紀錄…</p>
       </main>
     );
   }

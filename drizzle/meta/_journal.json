@@ -57,6 +57,13 @@
       "when": 1786200000000,
       "tag": "0007_reset_production",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786262400000,
+      "tag": "0008_atomic_private_scan",
+      "breakpoints": true
     }
   ]
 }
