@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import {
+  CAMERA_CODE_RELEASE_MS,
+  EMPTY_CAMERA_SCAN_STATE,
+  advanceCameraScanState,
+} from "../app/camera-scan-state.ts";
+
 async function render(path = "/", init = {}, envOverrides = {}) {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}-${Math.random()}`);
@@ -277,6 +283,23 @@ test("wires persistence, scanner, secured projection feed, and event controls", 
   assert.match(page, /writeBackgroundImageDataUrl/);
   assert.match(scanPage, /readBackgroundImageDataUrl/);
   assert.match(scanPage, /BarcodeDetector/);
+  assert.match(scanPage, /advanceCameraScanState/);
+  let cameraTransition = advanceCameraScanState(EMPTY_CAMERA_SCAN_STATE, "QR-001", 0);
+  assert.equal(cameraTransition.codeToScan, "QR-001");
+  cameraTransition = advanceCameraScanState(cameraTransition.state, "QR-001", 220);
+  assert.equal(cameraTransition.codeToScan, null);
+  cameraTransition = advanceCameraScanState(cameraTransition.state, "", 440);
+  assert.equal(cameraTransition.state.code, "QR-001");
+  cameraTransition = advanceCameraScanState(
+    cameraTransition.state,
+    "",
+    220 + CAMERA_CODE_RELEASE_MS,
+  );
+  assert.equal(cameraTransition.state.code, "");
+  cameraTransition = advanceCameraScanState(cameraTransition.state, "QR-001", 2_000);
+  assert.equal(cameraTransition.codeToScan, "QR-001");
+  cameraTransition = advanceCameraScanState(cameraTransition.state, "QR-002", 2_220);
+  assert.equal(cameraTransition.codeToScan, "QR-002");
   assert.match(scanPage, /deviceId: \{ exact: cameraId \}/);
   assert.match(scanPage, /報到提示音/);
   assert.match(scanPage, /scanInputTimerRef/);
