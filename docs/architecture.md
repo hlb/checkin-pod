@@ -62,10 +62,10 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 5. IndexedDB 保存完整原始欄位、掃描鍵、活動連線資料與最新狀態快取。
 6. `/scan` 從同一個瀏覽器 profile 讀取活動連線。
 7. 每次掃描呼叫 `POST scan`。手動報到呼叫 `POST set_attendee`。
-8. D1 原子判定成功、重複或未知，並立即寫入 activity。
+8. D1 在同一個 `batch()` transaction 內原子判定成功、重複或未知，並立即寫入 activity。
 9. 中控台透過 ordered changes feed 取得最新狀態。`/projection` 開啟時先從 projection feed 取得完整 snapshot，再依 cursor 取得後續 changes。
 
-完整原始 CSV row 留在管理瀏覽器。D1 保存活動復原與報到需要的欄位，單筆最小化 `original_json` 上限為 20 KB。
+完整原始 CSV row 留在管理瀏覽器。D1 使用每場活動內的 `guest-N` 不透明 attendee ID，只保存姓名、管理員選取的顯示欄位與報到狀態。QR Code、票號與其他專用掃描憑證只在匯入時計算 SHA-256，明文不寫入 D1；Email 等同時可作為顯示欄位的資料，只有在管理員選取時才保存。單筆最小化 `original_json` 上限為 20 KB。
 
 舊版 `singleSync` IndexedDB 記錄只用於一次相容遷移。中控台開啟活動時會從 D1 復原名單、建立新的主 lane，並改存 `sharedEvent` 連線。
 
@@ -77,15 +77,15 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 4. 工作站使用 POST 交換 bootstrap token。啟用回應直接提供活動 metadata，不依賴新設備的 IndexedDB，也不需要先送出第二個認證請求。伺服器設定 `HttpOnly; SameSite=Strict; Secure` production Cookie，瀏覽器立即清除 fragment。
 5. Local Storage 只保存 event、lane 與 lane name，不保存 token 或掃描內容。
 6. API 將 QR Code 正規化並以 SHA-256 雜湊查找 attendee。
-7. SQL 只在 `checked_in_at IS NULL` 時更新 attendee。
-8. API 寫入帶有唯一 `request_id` 的 activity。
+7. SQL 只在 `checked_in_at IS NULL` 且 request 尚未處理時更新 attendee。
+8. attendee 狀態與帶有唯一 `request_id` 的 activity 由同一個 D1 `batch()` transaction 寫入；任一 statement 失敗時整批 rollback。
 9. scan response 只包含固定識別欄位與 server-side allowlist 產生的 `displayValues`。
 10. 中控台透過 ordered changes feed 合併所有工作站結果。
 11. 投影頁面開啟時先透過 projection feed 取得完整 snapshot，再依 cursor 取得後續 changes。
 
 ### 4.3 一致性規則
 
-- `ATOMIC_CHECK_IN_SQL` 保證同一位參加者只有第一個並行請求成功。
+- `ATOMIC_CHECK_IN_SQL` 與 `ATOMIC_SCAN_ACTIVITY_SQL` 在同一個 D1 transaction 內執行，保證 attendee 狀態與 activity 不會只寫入其中一邊。
 - `(event_id, request_id)` unique index 保證重送冪等。
 - `checkin_activity.id` 是每場活動 changes feed 的游標。
 - 中控台只以 ordered changes feed 推進 shared cursor。
@@ -103,7 +103,7 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 | Table | Key | 內容 | 保存期 |
 |---|---|---|---|
 | `checkin_events` | `event_id` | 活動名稱、顯示設定、隱私模式、操作模式、狀態、cue、到期日 | 預設 30 天或手動刪除 |
-| `checkin_attendees` | `(event_id, attendee_id)` | 報到必要欄位、選定顯示欄位、報到時間、最小化 JSON | event cascade |
+| `checkin_attendees` | `(event_id, attendee_id)` | 不透明 `guest-N` ID、姓名、選定顯示欄位、報到時間、最後成功 request ID、最小化 JSON | event cascade |
 | `checkin_scan_keys` | `(event_id, key_hash)` | QR、Email、票號等掃描鍵的 SHA-256 與 attendee 關聯 | event 或 attendee cascade |
 | `checkin_lanes` | `lane_id` | lane 名稱、token hash、使用與停用時間 | event cascade |
 | `checkin_activity` | 自增 `id` | success、duplicate、unknown、undo 與 request ID | event cascade |
@@ -123,18 +123,19 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 
 | Method / mode 或 action | Actor | 認證 | 主要資料或效果 |
 |---|---|---|---|
-| `GET mode=projection` | 投影頁 | 公開 | 活動名稱、統計、公開 display name、時間、cue |
+| `GET mode=projection` | 投影頁 | 公開 | Event ID、活動名稱、統計、公開 display name、時間、cue；不含名單檔名 |
 | `GET mode=lane` | 報到工作站 | lane Cookie | 唯讀活動 metadata 與顯示欄位 |
 | `POST activate_lane` | 報到工作站 | bootstrap token | 交換 HttpOnly lane Cookie |
 | `POST lane_heartbeat` | 報到工作站 | lane Cookie | 讀取 metadata 並更新 last seen |
 | `POST scan` | 報到工作站 | lane Cookie | QR 判定與最小化當次結果 |
 | `GET lanes/admin_summary/events/roster/changes` | 管理員 | admin Cookie | 工作站、活動歷史、完整名單與 ordered feed |
+| `POST initialize` | 管理員 | admin Cookie | 初始化 runtime schema 並執行到期資料清理 |
 | `POST begin/upload/finalize` | 管理員 | admin Cookie | 分段匯入最小化活動資料 |
 | `POST set_attendee` | 管理員 | admin Cookie | 手動報到與取消 |
 | `POST lane mutations` | 管理員 | admin Cookie | 新增、改名、停用、換發 |
 | `POST event mutations` | 管理員 | admin Cookie | 設定、cue、啟用、停用、改名、刪除 |
 
-所有回應使用 `Cache-Control: no-store`。GET 不更新資料庫。管理 mutation 寫入 `checkin_admin_audit`。
+所有回應使用 `Cache-Control: no-store`。GET 不建立 schema、不清除資料，也不更新資料庫。管理 client 先呼叫具 admin session 的 `POST initialize`；其他 POST 與每日排程也會補做到期清理。管理 mutation 寫入 `checkin_admin_audit`。
 
 ### Gateway 路由
 
@@ -153,7 +154,7 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 
 ### 邊界 A：公開網路
 
-`/scan`、`/projection`、`/benchmark` 與 API 由同一網域提供。投影頁設計為公開，預設不公開真實姓名。Worker 統一設定 CSP、`no-referrer`、nosniff、frame protection、Permissions Policy、COOP、CORP 與 HTTPS HSTS。
+`/scan`、`/projection`、`/benchmark` 與 API 由同一網域提供。投影頁設計為公開，會提供 Event ID 與活動名稱，預設不公開真實姓名，也不提供名單檔名。Worker 統一設定 CSP、`no-referrer`、nosniff、frame protection、Permissions Policy、COOP、CORP 與 HTTPS HSTS。
 
 ### 邊界 B：管理 session
 
@@ -169,13 +170,13 @@ IndexedDB 保存目前活動快取與完整原始欄位。Local Storage 只保�
 
 ### 邊界 E：D1
 
-D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、activity 與 admin audit。瀏覽器不能直接連線 D1。參數化 SQL、外鍵、unique index、容量上限與到期清理維持資料完整性。
+D1 保存不透明 attendee ID、最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、activity 與 admin audit。D1 不保存 QR Code、票號等專用掃描憑證明文。瀏覽器不能直接連線 D1。參數化 SQL、外鍵、unique index、容量上限與到期清理維持資料完整性。
 
 ### 資料分類
 
 | 分類 | 例子 | 控制 |
 |---|---|---|
-| 公開 | benchmark、活動名稱、匿名或選定公開名稱、報到時間 | no-store、公開 ID、每場隱私設定 |
+| 公開 | benchmark、Event ID、活動名稱、匿名或選定公開名稱、報到時間 | no-store、公開 ID、每場隱私設定 |
 | 內部 | lane 名稱、活動統計、activity cursor | admin 或 lane scope |
 | 個人資料 | 姓名、Email、電話、票種、原始 CSV row | admin scope、最小化 D1、IndexedDB、30 天預設保存 |
 | 秘密 | 管理密碼、`SESSION_SECRET`、admin Cookie、lane token / Cookie | environment secret、HttpOnly Cookie、hash at rest |
@@ -200,7 +201,7 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 - 投影預設 `count`，另提供 `masked` 與 `names`。
 - 每場活動預設保留 30 天，API 最多接受 1–365 天。
 
-公開 benchmark 保存的壓力測試使用 10,000 位參加者、50 台 clients 與 10,542 個 scan requests。結果為 `496.86 req/s`、p50 `95.8 ms`、p95 `135.3 ms`、p99 `162.4 ms`。安全修正後以 HttpOnly lane session、實際 request stream 上限與五個 rate-limit bindings 重跑相同規模，得到 `283.19 req/s`、p95 `224.1 ms`、0 個非預期失敗，22/22 一致性與安全檢查通過。兩者都是本機結果，正式環境容量仍需要依 D1 plan、網路與地區量測。
+公開 benchmark 保存的壓力測試使用 10,000 位參加者、50 台 clients 與 10,542 個 scan requests。2026-08-09 以 HttpOnly lane session、原子 attendee/activity transaction、不透明 attendee ID、掃描憑證最小化與五個 rate-limit bindings 重跑，得到 `253.47 req/s`、p50 `191.9 ms`、p95 `253.0 ms`、p99 `316.6 ms`、0 個非預期失敗，23/23 一致性、授權與隱私檢查通過。這是本機結果，正式環境容量仍需要依 D1 plan、網路與地區量測。
 
 ## 9. 部署與 migration
 
@@ -214,12 +215,12 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 本次正式部署採資料庫清空重建：
 
 1. 暫停活動報到與管理操作。
-2. Sites 在部署時執行 `drizzle/0007_reset_production.sql`，永久刪除所有活動與 audit 資料並建立目前 schema。
+2. Sites 在部署時先執行 `drizzle/0007_reset_production.sql`，永久刪除所有活動與 audit 資料，再執行 `drizzle/0008_atomic_private_scan.sql` 建立原子 request 欄位與不透明 attendee ID schema。
 3. 部署新 Worker。
-4. 請求 `/api/shared-checkin?mode=projection`，確認 runtime schema 與新資料庫可以正常使用。
+4. 登入中控台並呼叫具 admin session 的 `POST initialize`，確認 runtime schema 與新資料庫可以正常使用；projection GET 保持唯讀。
 5. 驗證登入、限流、工作站啟用、scan、投影隱私、history、delete 與 scheduled cleanup。
 
-`drizzle/0000`–`0006` 保留給 migration 測試與需要保留既有資料的其他部署者。`scripts/reset-d1.sql` 提供非 Sites 部署的人工 reset。本次部署不執行資料回復。若 Worker 需要回退，重新清空 D1 並部署與該版本相容的 Worker。本機開發的 Wrangler / Miniflare 狀態保存在 `.wrangler/`。
+`drizzle/0000`–`0006` 保留給 migration 測試與需要保留既有資料的其他部署者。`0008` 是 forward-only migration：它將既有 attendee ID 改為每場活動內的 `guest-N`，移除未選取個資與掃描憑證明文，並同步重建 scan key 與 activity 外鍵。`scripts/reset-d1.sql` 提供非 Sites 部署的人工 reset。本次部署不執行資料回復。若 Worker 需要回退，重新清空 D1 並部署與該版本相容的 Worker。本機開發的 Wrangler / Miniflare 狀態保存在 `.wrangler/`。
 
 ## 10. 失敗模式與復原
 
@@ -236,7 +237,7 @@ D1 保存最小化參加者資料、雜湊 scan keys、雜湊 lane tokens、acti
 
 ## 11. 已知限制與剩餘風險
 
-- 公開 projection 仍可由知道網址的人查看活動名稱、總數與報到時間。敏感活動應使用匿名預設，並在前方加入 Cloudflare Access 或其他存取控制。
+- 公開 projection 仍可由知道網址的人查看 Event ID、活動名稱、總數與報到時間。敏感活動應使用匿名預設，並在前方加入 Cloudflare Access 或其他存取控制。
 - 本機 IndexedDB 保存完整 CSV。使用共用電腦時需要獨立 OS 帳號、磁碟加密與活動後清除資料。
 - Cloudflare Rate Limiting binding 的計數以資料中心為範圍且最終一致。高風險部署應再設定 account-level WAF rate limiting 與告警。
 - `image-size` 2.0.2 的 HEIF、ICNS、JXL parser advisories 沒有 patched release。設定會全域停用這些格式，只接受產品需要的 JPG、PNG 與 WebP 路徑。

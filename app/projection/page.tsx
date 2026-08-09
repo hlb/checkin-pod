@@ -17,7 +17,6 @@ type FloatingName = {
 type Entrance = { key: string; attendee: LiveAttendee };
 type SharedProjectionEvent = {
   eventId: string;
-  fileName: string;
   eventName: string;
   total: number;
   cursor: number;

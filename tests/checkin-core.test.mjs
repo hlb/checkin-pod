@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   applyScanToEvent,
+  attendeeForServerImport,
   csvEscape,
   defaultDisplayFields,
   filterEligibleAttendees,
@@ -140,7 +141,7 @@ test("reports duplicate and unknown scans without changing an existing check-in 
   assert.equal(unknown.event.revision, 7);
 });
 
-test("minimizes server-bound original rows to operational and selected fields", () => {
+test("minimizes server-bound original rows to selected non-credential fields", () => {
   const minimized = minimizeOriginalRow({
     name: "王小明",
     email: "ming@example.com",
@@ -150,10 +151,30 @@ test("minimizes server-bound original rows to operational and selected fields", 
   }, ["company"]);
 
   assert.deepEqual(minimized, {
-    name: "王小明",
-    email: "ming@example.com",
-    qr_code_url: "https://lu.ma/check-in?pk=alpha",
     company: "Example Co.",
   });
   assert.equal("dietary_notes" in minimized, false);
+  assert.equal("qr_code_url" in minimized, false);
+});
+
+test("uses opaque attendee IDs and only sends selected PII plus transient scan keys", () => {
+  const [attendee] = toAttendees([{
+    guest_id: "source-guest-id",
+    name: "王小明",
+    email: "ming@example.com",
+    phone_number: "0912345678",
+    qr_code_url: "https://lu.ma/check-in?pk=alpha",
+    company: "Example Co.",
+  }], "2026-08-07T00:00:00.000Z");
+  const payload = attendeeForServerImport({ ...attendee, id: "raw-personal-identifier" }, ["company"], 0);
+
+  assert.equal(attendee.id, "guest-1");
+  assert.ok(attendee.scanKeys.every((key) => !attendee.id.includes(key)));
+  assert.equal(payload.id, "guest-1");
+  assert.equal(payload.email, "");
+  assert.equal(payload.phone, "");
+  assert.equal(payload.ticket, "");
+  assert.deepEqual(payload.original, { company: "Example Co." });
+  assert.ok(payload.scanKeys.includes("alpha"));
+  assert.equal("qrValue" in payload, false);
 });

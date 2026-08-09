@@ -89,7 +89,7 @@ npm run dev
 
 ### 多機模式
 
-中控台為每個入口建立獨立工作站連結。啟用密鑰位於 URL fragment，不會送進 access log 或 Referer。新設備開啟連結後直接從伺服器取得活動資料，不需要本機名單。伺服器交換密鑰後設定 HttpOnly 工作站 Cookie，畫面立即清除網址中的密鑰。D1 使用條件更新完成報到判定。每筆請求使用 `requestId` 保證冪等性。工作站可以改名、停用與換發連結。
+中控台為每個入口建立獨立工作站連結。啟用密鑰位於 URL fragment，不會送進 access log 或 Referer。新設備開啟連結後直接從伺服器取得活動資料，不需要本機名單。伺服器交換密鑰後設定 HttpOnly 工作站 Cookie，畫面立即清除網址中的密鑰。D1 在同一個 transaction 內完成條件報到更新與 activity 寫入。每筆請求使用 `requestId` 保證冪等性。工作站可以改名、停用與換發連結。
 
 ## CSV 匯入
 
@@ -100,7 +100,7 @@ npm run dev
 - KKTIX QR Code 序號、票券付款狀態、Attendance Book
 - 報名序號、訂單編號與檢查碼
 
-系統會納入可報到狀態。CSV 檔案上限為 50 MB。完整原始欄位保存在單機 IndexedDB，供畫面設定與匯出使用。伺服器只保存報到必要欄位與管理員選取的顯示欄位，單筆最小化 JSON 上限為 20 KB。單場活動上限為 10,000 人。
+系統會納入可報到狀態。CSV 檔案上限為 50 MB。完整原始欄位保存在單機 IndexedDB，供畫面設定與匯出使用。伺服器使用每場活動內的 `guest-N` 不透明參加者 ID，只保存報到需要的姓名與管理員選取的顯示欄位；QR Code、票號等專用掃描憑證只在匯入時產生 SHA-256 雜湊，不保存明文。Email 只有在管理員選為顯示欄位時才保存。單筆最小化 JSON 上限為 20 KB。單場活動上限為 10,000 人。
 
 CSV 匯出會中和 `=`、`+`、`-`、`@` 與控制字元開頭的試算表公式，並保留標準 CSV quoting。
 
@@ -136,9 +136,9 @@ localhost 環境的投影電腦可以使用報到電腦的區網 IP，例如 `ht
 
 - IndexedDB 保存目前活動快取、完整原始欄位、最新報到狀態與顯示設定。D1 是報到操作的資料來源。
 - Local Storage 只保存非秘密的工作站識別資料。工作站權杖保存在 HttpOnly Cookie。
-- D1 保存活動、最小化參加者資料、掃描鍵雜湊、工作站權杖雜湊、報到紀錄與管理操作 audit log。
-- 公開投影 API 提供活動名稱、總人數、公開顯示名稱、報到時間與投影指令。公開 ID 不使用內部 attendee ID。
-- 每場活動預設保留 30 天。請求處理與每日排程會刪除到期活動及其關聯資料。
+- D1 保存活動、`guest-N` 不透明參加者 ID、最小化參加者資料、掃描鍵雜湊、工作站權杖雜湊、報到紀錄與管理操作 audit log。
+- 公開投影 API 提供 Event ID、活動名稱、總人數、公開顯示名稱、報到時間與投影指令；不提供名單檔名。公開來賓 ID 不使用 D1 attendee ID。
+- 每場活動預設保留 30 天。具狀態變更的 API 請求與每日排程會刪除到期活動及其關聯資料；GET 保持唯讀。
 - 永久刪除活動會串聯刪除該活動的參加者、掃描鍵、工作站與活動紀錄。
 
 使用單位需要建立資料保存期限、隱私告知與刪除流程。
@@ -151,7 +151,7 @@ npm run lint
 npm audit --omit=dev
 ```
 
-目前 `npm test` 包含 TypeScript、production build 與 43 項測試。`npm run lint` 已通過 ESLint 與 accessibility 檢查。
+目前 `npm test` 包含 TypeScript、production build 與 44 項測試。`npm run lint` 已通過 ESLint 與 accessibility 檢查。
 
 壓力測試：
 
@@ -160,7 +160,7 @@ npm run dev
 npm run stress
 ```
 
-目前保存的基準結果為 10,000 人、50 工作站、10,542 個掃描 API 請求，平均 `496.86 req/s`，p95 `135.3 ms`。完整結果在 [壓力測試報告](reports/stress-test-10000x50.md)。
+目前保存的基準結果為 10,000 人、50 工作站、10,542 個掃描 API 請求，平均 `253.47 req/s`，p95 `253.0 ms`，0 個非預期失敗，23/23 項一致性、授權與隱私檢查通過。完整結果在 [壓力測試報告](reports/stress-test-10000x50.md)。
 
 ## 常用指令
 

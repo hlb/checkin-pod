@@ -34,6 +34,7 @@ export const SHARED_SCHEMA_SQL = [
     approval_status TEXT NOT NULL DEFAULT '',
     checked_in_at TEXT,
     checked_in_lane_id TEXT,
+    checked_in_request_id TEXT,
     original_json TEXT NOT NULL,
     PRIMARY KEY(event_id, attendee_id),
     FOREIGN KEY(event_id) REFERENCES checkin_events(event_id) ON DELETE CASCADE
@@ -106,7 +107,31 @@ export const SHARED_SCHEMA_SQL = [
 ] as const;
 
 export const ATOMIC_CHECK_IN_SQL = `UPDATE checkin_attendees
-  SET checked_in_at = ?, checked_in_lane_id = ?
+  SET checked_in_at = ?, checked_in_lane_id = ?, checked_in_request_id = ?
   WHERE event_id = ? AND attendee_id = ? AND checked_in_at IS NULL
-  RETURNING event_id, attendee_id, position, name, email, phone, ticket,
-    approval_status, checked_in_at, checked_in_lane_id, original_json`;
+    AND NOT EXISTS (
+      SELECT 1 FROM checkin_activity
+      WHERE event_id = ? AND request_id = ?
+    )`;
+
+export const ATOMIC_SCAN_ACTIVITY_SQL = `INSERT OR IGNORE INTO checkin_activity
+    (event_id, attendee_id, lane_id, outcome, checked_in_at, occurred_at, request_id)
+  SELECT ?, ?, ?,
+    CASE WHEN checked_in_request_id = ? THEN 'success' ELSE 'duplicate' END,
+    checked_in_at, ?, ?
+  FROM checkin_attendees
+  WHERE event_id = ? AND attendee_id = ?`;
+
+export const IDEMPOTENT_SET_ATTENDEE_SQL = `UPDATE checkin_attendees
+  SET checked_in_at = ?, checked_in_lane_id = NULL, checked_in_request_id = ?
+  WHERE event_id = ? AND attendee_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM checkin_activity
+      WHERE event_id = ? AND request_id = ?
+    )`;
+
+export const IDEMPOTENT_SET_ACTIVITY_SQL = `INSERT OR IGNORE INTO checkin_activity
+    (event_id, attendee_id, lane_id, outcome, checked_in_at, occurred_at, request_id)
+  SELECT event_id, attendee_id, NULL, ?, checked_in_at, ?, ?
+  FROM checkin_attendees
+  WHERE event_id = ? AND attendee_id = ?`;

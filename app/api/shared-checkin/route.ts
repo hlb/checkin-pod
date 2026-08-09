@@ -3,7 +3,7 @@ import { adminSessionFromRequest, hasValidAdminSession, sha256Hex } from "../../
 import { laneSessionCookie, laneTokenFromRequest } from "../../lane-auth";
 import { readLimitedText, utf8ByteLength } from "../../request-body";
 import type { Attendee, OriginalRow, ProjectionCueType, ProjectionPrivacy } from "../../checkin-core";
-import { scanKeysFor } from "../../checkin-core";
+import { attendeeForServerImport, scanKeysFor } from "../../checkin-core";
 import {
   MAX_SHARED_ATTENDEES,
   MAX_SHARED_LANES,
@@ -12,7 +12,13 @@ import {
   isEventDeletionConfirmed,
   publicProjectionName,
 } from "../../shared-checkin-policy";
-import { ATOMIC_CHECK_IN_SQL, SHARED_SCHEMA_SQL } from "../../shared-checkin-sql";
+import {
+  ATOMIC_CHECK_IN_SQL,
+  ATOMIC_SCAN_ACTIVITY_SQL,
+  IDEMPOTENT_SET_ACTIVITY_SQL,
+  IDEMPOTENT_SET_ATTENDEE_SQL,
+  SHARED_SCHEMA_SQL,
+} from "../../shared-checkin-sql";
 import { getD1 } from "../../../db";
 
 type EventRow = {
@@ -235,6 +241,14 @@ async function adminEventMetadata(database: D1Database, event: EventRow) {
   };
 }
 
+function projectionEventMetadata(event: EventRow) {
+  return {
+    eventId: event.event_id,
+    eventName: event.event_name || defaultEventName(event.file_name),
+    total: event.total,
+  };
+}
+
 async function findAdminEvent(database: D1Database, requestedEventId = "") {
   const selection = `SELECT event_id, file_name, event_name, headers_json, selected_fields_json,
       background_color, projection_privacy, sync_mode, total, status, cue_id, cue_type, cue_at,
@@ -341,6 +355,18 @@ function laneAttendeeFromRow(row: AttendeeRow, selectedFields: string[]) {
   };
 }
 
+function importedOriginalRow(value: unknown): OriginalRow | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value);
+  if (entries.length > 250) return null;
+  const original: OriginalRow = {};
+  for (const [field, rawValue] of entries) {
+    if (!field || utf8ByteLength(field) > 240 || typeof rawValue !== "string") return null;
+    original[field] = rawValue;
+  }
+  return original;
+}
+
 async function scanResponse(
   database: D1Database,
   eventId: string,
@@ -421,8 +447,11 @@ async function handleUploadChunk(request: Request, body: Record<string, unknown>
   if (!eventId || !attendees.length || attendees.length > 200) {
     return noStoreJson({ error: "invalid_payload" }, { status: 400 });
   }
-  const event = await database.prepare("SELECT event_id, status FROM checkin_events WHERE event_id = ?")
-    .bind(eventId).first<{ event_id: string; status: string }>();
+  const event = await database.prepare(`SELECT event_id, status, selected_fields_json, total
+      FROM checkin_events WHERE event_id = ?`)
+    .bind(eventId).first<{
+      event_id: string; status: string; selected_fields_json: string; total: number;
+    }>();
   if (!event) return noStoreJson({ error: "event_not_found" }, { status: 404 });
   if (event.status !== "importing") return noStoreJson({ error: "event_not_ready" }, { status: 409 });
 
@@ -430,38 +459,55 @@ async function handleUploadChunk(request: Request, body: Record<string, unknown>
   const keyAssignments = new Map<string, string>();
   for (const raw of attendees) {
     const attendee = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-    const attendeeId = safeText(attendee.id, 240);
+    const attendeeId = safeText(attendee.id, 40);
     const name = safeText(attendee.name, 300);
     const position = Number(attendee.position);
     const scanKeys = validStringArray(attendee.scanKeys, 24, 2048);
-    const original = attendee.original && typeof attendee.original === "object" ? attendee.original : {};
-    const originalJson = JSON.stringify(original);
-    if (!attendeeId || !name || !Number.isInteger(position) || position < 0 || !scanKeys || !scanKeys.length || utf8ByteLength(originalJson) > 20_000) {
+    const original = importedOriginalRow(attendee.original);
+    if (!attendeeId || !name || !Number.isInteger(position) || position < 0 || position >= event.total
+      || !scanKeys || !scanKeys.length || !original) {
+      return noStoreJson({ error: "invalid_payload" }, { status: 400 });
+    }
+    const minimized = attendeeForServerImport({
+      id: attendeeId,
+      name,
+      email: safeText(attendee.email, 500),
+      phone: safeText(attendee.phone, 120),
+      ticket: safeText(attendee.ticket, 300),
+      approvalStatus: safeText(attendee.approvalStatus, 120),
+      qrValue: "",
+      scanKeys,
+      checkedInAt: safeIso(attendee.checkedInAt),
+      original,
+    }, parseJsonArray(event.selected_fields_json), position);
+    const originalJson = JSON.stringify(minimized.original);
+    if (attendeeId !== minimized.id || utf8ByteLength(originalJson) > 20_000) {
       return noStoreJson({ error: "invalid_payload" }, { status: 400 });
     }
     statements.push(database.prepare(`INSERT INTO checkin_attendees
         (event_id, attendee_id, position, name, email, phone, ticket, approval_status,
-          checked_in_at, checked_in_lane_id, original_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+          checked_in_at, checked_in_lane_id, checked_in_request_id, original_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
       ON CONFLICT(event_id, attendee_id) DO UPDATE SET
         position = excluded.position, name = excluded.name, email = excluded.email,
         phone = excluded.phone, ticket = excluded.ticket,
         approval_status = excluded.approval_status, checked_in_at = excluded.checked_in_at,
+        checked_in_lane_id = NULL, checked_in_request_id = NULL,
         original_json = excluded.original_json`)
-      .bind(eventId, attendeeId, position, name, safeText(attendee.email, 500),
-        safeText(attendee.phone, 120), safeText(attendee.ticket, 300),
-        safeText(attendee.approvalStatus, 120), safeIso(attendee.checkedInAt), originalJson));
+      .bind(eventId, minimized.id, position, minimized.name, minimized.email,
+        minimized.phone, minimized.ticket, minimized.approvalStatus,
+        minimized.checkedInAt, originalJson));
     const hashes = [...new Set(await Promise.all(scanKeys.map((key) => sha256Hex(key.toLowerCase()))))];
     for (const keyHash of hashes) {
       const assignedAttendee = keyAssignments.get(keyHash);
-      if (assignedAttendee && assignedAttendee !== attendeeId) {
+      if (assignedAttendee && assignedAttendee !== minimized.id) {
         return noStoreJson({ error: "duplicate_scan_key" }, { status: 409 });
       }
-      keyAssignments.set(keyHash, attendeeId);
+      keyAssignments.set(keyHash, minimized.id);
       statements.push(database.prepare(`INSERT INTO checkin_scan_keys (event_id, key_hash, attendee_id)
         VALUES (?, ?, ?)
         ON CONFLICT(event_id, key_hash) DO NOTHING`)
-        .bind(eventId, keyHash, attendeeId));
+        .bind(eventId, keyHash, minimized.id));
     }
   }
   const keyEntries = [...keyAssignments.entries()];
@@ -590,23 +636,24 @@ async function handleScan(request: Request, body: Record<string, unknown>, datab
       activity ? undefined : { status: 500 });
   }
 
-  const updated = await database.prepare(ATOMIC_CHECK_IN_SQL)
-    .bind(occurredAt, laneId, eventId, candidate.attendee_id)
-    .all<AttendeeRow>();
-  const checked = updated.results[0];
-  const authoritative = checked ?? await rowForAttendee(database, eventId, candidate.attendee_id);
-  const requestedOutcome = checked ? "success" : "duplicate";
-  const activity = await recordActivity(database, {
-    eventId,
-    attendeeId: candidate.attendee_id,
-    laneId,
-    outcome: requestedOutcome,
-    checkedInAt: authoritative?.checked_in_at ?? occurredAt,
-    occurredAt,
-    requestId,
-  });
-  await database.prepare("UPDATE checkin_lanes SET last_seen_at = ? WHERE lane_id = ?")
-    .bind(occurredAt, laneId).run();
+  await database.batch([
+    database.prepare(ATOMIC_CHECK_IN_SQL)
+      .bind(occurredAt, laneId, requestId, eventId, candidate.attendee_id, eventId, requestId),
+    database.prepare(ATOMIC_SCAN_ACTIVITY_SQL)
+      .bind(
+        eventId,
+        candidate.attendee_id,
+        laneId,
+        requestId,
+        occurredAt,
+        requestId,
+        eventId,
+        candidate.attendee_id,
+      ),
+    database.prepare("UPDATE checkin_lanes SET last_seen_at = ? WHERE lane_id = ?")
+      .bind(occurredAt, laneId),
+  ]);
+  const activity = await activityByRequest(database, eventId, requestId);
   return noStoreJson(activity
     ? await scanResponse(database, eventId, activity, selectedFields, includeFullAttendee)
     : { error: "write_failed" },
@@ -624,18 +671,20 @@ async function handleSetAttendee(request: Request, body: Record<string, unknown>
   }
   const existing = await rowForAttendee(database, eventId, attendeeId);
   if (!existing) return noStoreJson({ error: "event_not_found" }, { status: 404 });
-  await database.prepare(`UPDATE checkin_attendees SET checked_in_at = ?, checked_in_lane_id = NULL
-    WHERE event_id = ? AND attendee_id = ?`).bind(checkedInAt, eventId, attendeeId).run();
   const occurredAt = new Date().toISOString();
-  const activity = await recordActivity(database, {
-    eventId, attendeeId, laneId: null, outcome: checkedInAt ? "success" : "undo",
-    checkedInAt, occurredAt, requestId,
-  });
+  await database.batch([
+    database.prepare(IDEMPOTENT_SET_ATTENDEE_SQL)
+      .bind(checkedInAt, requestId, eventId, attendeeId, eventId, requestId),
+    database.prepare(IDEMPOTENT_SET_ACTIVITY_SQL)
+      .bind(checkedInAt ? "success" : "undo", occurredAt, requestId, eventId, attendeeId),
+  ]);
+  const activity = await activityByRequest(database, eventId, requestId);
+  if (!activity) return noStoreJson({ error: "write_failed" }, { status: 500 });
   const row = await rowForAttendee(database, eventId, attendeeId);
   await recordAdminAudit(request, database, checkedInAt ? "attendee.check_in" : "attendee.undo", eventId, {
     attendeeId,
   });
-  return noStoreJson({ attendee: row ? attendeeFromRow(row) : attendeeFromRow(existing), cursor: activity?.id ?? 0 });
+  return noStoreJson({ attendee: row ? attendeeFromRow(row) : attendeeFromRow(existing), cursor: activity.id });
 }
 
 async function handleCreateLane(request: Request, body: Record<string, unknown>, database: D1Database) {
@@ -791,9 +840,6 @@ export async function POST(request: Request) {
     );
   }
   try {
-    const database = getD1();
-    await ensureSchema(database);
-    await purgeExpiredEvents(database);
     const parsed = (() => {
       try {
         return JSON.parse(rawBody.value) as unknown;
@@ -802,6 +848,15 @@ export async function POST(request: Request) {
       }
     })();
     const body = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+    const database = getD1();
+    if (body.action === "initialize") {
+      if (!(await requireAdmin(request))) return noStoreJson({ error: "unauthorized" }, { status: 401 });
+      await ensureSchema(database);
+      await purgeExpiredEvents(database);
+      return noStoreJson({ ok: true });
+    }
+    await ensureSchema(database);
+    await purgeExpiredEvents(database);
     switch (body.action) {
       case "begin_import": return handleBeginImport(request, body, database);
       case "upload_chunk": return handleUploadChunk(request, body, database);
@@ -972,8 +1027,7 @@ async function handleProjectionGet(url: URL, database: D1Database) {
       .bind(event.event_id).all<{ position: number; name: string; checked_in_at: string }>();
     return noStoreJson({
       event: {
-        eventId: event.event_id, fileName: event.file_name, total: event.total,
-        eventName: event.event_name || defaultEventName(event.file_name),
+        ...projectionEventMetadata(event),
         cursor: cursorRow?.cursor ?? 0, cue,
         attendees: attendees.results.map((row) => ({
           id: `guest-${row.position}`,
@@ -995,8 +1049,7 @@ async function handleProjectionGet(url: URL, database: D1Database) {
   const page = result.results.slice(0, SHARED_CHANGE_PAGE_SIZE);
   return noStoreJson({
     event: {
-      eventId: event.event_id, fileName: event.file_name, total: event.total,
-      eventName: event.event_name || defaultEventName(event.file_name),
+      ...projectionEventMetadata(event),
       cursor: page.at(-1)?.id ?? Math.max(after, cursorRow?.cursor ?? 0),
       hasMore, cue,
       changes: page.map((row) => ({
@@ -1012,8 +1065,6 @@ async function handleProjectionGet(url: URL, database: D1Database) {
 export async function GET(request: Request) {
   try {
     const database = getD1();
-    await ensureSchema(database);
-    await purgeExpiredEvents(database);
     const url = new URL(request.url);
     switch (url.searchParams.get("mode")) {
       case "lane": return handleLaneGet(request, url, database);

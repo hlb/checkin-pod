@@ -6,7 +6,7 @@ import styles from "./benchmark.module.css";
 
 const pageTitle = "Checkin Pod 效能實測｜10,000 人 × 50 個入口";
 const pageDescription =
-  "10,000 位來賓、50 個並行入口、496.86 req/s、0 次非預期失敗。";
+  "10,000 位來賓、50 個並行入口、253.47 req/s、0 次非預期失敗。";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -41,7 +41,7 @@ export async function generateMetadata(): Promise<Metadata> {
 const headlineMetrics = [
   { value: "10,000", label: "位來賓完整報到" },
   { value: "50", label: "個入口同時作業" },
-  { value: "496.86", unit: "req/s", label: "實測平均吞吐量" },
+  { value: "253.47", unit: "req/s", label: "實測平均吞吐量" },
   { value: "0", label: "非預期失敗" },
 ];
 
@@ -67,16 +67,16 @@ const organizerOutcomes = [
 ];
 
 const latencyRows = [
-  { label: "一般回應 p50", value: "95.8 ms", width: "25%" },
-  { label: "忙碌時段 p95", value: "135.3 ms", width: "35%" },
-  { label: "極端值 p99", value: "162.4 ms", width: "42%" },
-  { label: "單次最高", value: "384.8 ms", width: "100%" },
+  { label: "一般回應 p50", value: "191.9 ms", width: "45%" },
+  { label: "忙碌時段 p95", value: "253.0 ms", width: "59%" },
+  { label: "極端值 p99", value: "316.6 ms", width: "74%" },
+  { label: "單次最高", value: "425.7 ms", width: "100%" },
 ];
 
 const testSteps = [
   { label: "匯入", value: "10,000 人名單", note: "2.64 秒完成" },
   { label: "開站", value: "50 個獨立入口", note: "建立並逐一驗證" },
-  { label: "掃描", value: "10,542 次請求", note: "21.22 秒掃描階段" },
+  { label: "掃描", value: "10,542 次請求", note: "41.59 秒掃描階段" },
   { label: "搶刷", value: "10 張高競爭票", note: "每張由 50 台同掃" },
   { label: "對帳", value: "10,000 筆一致", note: "名單、活動紀錄、工作站、投影" },
 ];
@@ -90,6 +90,7 @@ const verifiedChecks = [
   "50 / 50 筆未知票券回報 unknown",
   "10,000 筆工作站成功數與活動紀錄一致",
   "投影牆取得 10,000 筆來賓狀態",
+  "D1 使用不透明 ID，且不保存專用掃描憑證明文",
 ];
 
 function Brand() {
@@ -122,7 +123,7 @@ export default function BenchmarkPage() {
       <section className={styles.hero}>
         <div className={styles.heroCopy}>
           <p className={styles.eyebrow}><span /> 10,000 人 × 50 工作站壓力測試</p>
-          <h1>10,000 位來賓，<br />50 個入口同步報到，<br /><em>496.86 req/s。</em></h1>
+          <h1>10,000 位來賓，<br />50 個入口同步報到，<br /><em>253.47 req/s。</em></h1>
           <p className={styles.heroLead}>
             本次壓測完成 10,000 人名單匯入、50 個入口同步掃描、10 輪同票競態與完整名單復原。
           </p>
@@ -134,7 +135,7 @@ export default function BenchmarkPage() {
               看公開投影畫面 <span aria-hidden="true">↗</span>
             </a>
           </div>
-          <p className={styles.heroNote}>2026-08-08 本機工程壓測 · Node v22.23.1 · macOS arm64</p>
+          <p className={styles.heroNote}>2026-08-09 本機工程壓測 · Node v22.23.1 · macOS arm64</p>
         </div>
 
         <div className={styles.liveCard} aria-label="壓力測試結果摘要">
@@ -163,7 +164,7 @@ export default function BenchmarkPage() {
             <small>49 台回報「已報到」</small>
           </div>
           <div className={styles.liveFoot}>
-            <span><strong>21 / 21</strong> 檢查通過</span>
+            <span><strong>23 / 23</strong> 檢查通過</span>
             <span><strong>0</strong> 非預期失敗</span>
           </div>
         </div>
@@ -182,7 +183,7 @@ export default function BenchmarkPage() {
         <div className={styles.sectionHeading}>
           <p className={styles.kicker}>10,000 人活動重點</p>
           <h2>4 組核心數字，<br />呈現完整入場能力。</h2>
-          <p>10,000 人容量、50 個入口、496.86 req/s 與 10,000 / 10,000 資料一致。</p>
+          <p>10,000 人容量、50 個入口、253.47 req/s 與 10,000 / 10,000 資料一致。</p>
         </div>
         <div className={styles.outcomeGrid}>
           {organizerOutcomes.map((outcome) => (
@@ -211,8 +212,8 @@ export default function BenchmarkPage() {
         </div>
         <div className={styles.latencyCard}>
           <div className={styles.latencyHead}>
-            <div><span>掃描 API 回應時間</span><small>95.8–384.8 ms</small></div>
-            <strong>p50 <em>95.8 ms</em></strong>
+            <div><span>掃描 API 回應時間</span><small>191.9–425.7 ms</small></div>
+            <strong>p50 <em>191.9 ms</em></strong>
           </div>
           <div className={styles.latencyRows}>
             {latencyRows.map((row) => (
@@ -230,10 +231,10 @@ export default function BenchmarkPage() {
       <section className={`${styles.section} ${styles.safetySection}`}>
         <div className={styles.safetyPanel}>
           <div className={styles.safetyHeading}>
-            <span className={styles.passSeal}>21/21<small>PASS</small></span>
+            <span className={styles.passSeal}>23/23<small>PASS</small></span>
             <div>
-              <p className={styles.kicker}>21 / 21 檢查通過</p>
-              <h2>21 / 21 項一致性檢查通過。</h2>
+              <p className={styles.kicker}>23 / 23 檢查通過</p>
+              <h2>23 / 23 項一致性與隱私檢查通過。</h2>
               <p>測試涵蓋工作站授權、重複防護、容量邊界、資料復原與跨畫面一致性。</p>
             </div>
           </div>
@@ -262,7 +263,7 @@ export default function BenchmarkPage() {
         <aside className={styles.disclosure}>
           <strong>測試條件</strong>
           <p>
-            本次工程壓測於 2026-08-08 的本機環境執行。正式活動的回應時間取決於現場網路、資料庫區域、入口配置、設備與瀏覽器。主辦單位可使用同一份 10,000 人測試包完成場地演練。
+            本次工程壓測於 2026-08-09 的本機環境執行。正式活動的回應時間取決於現場網路、資料庫區域、入口配置、設備與瀏覽器。主辦單位可使用同一份 10,000 人測試包完成場地演練。
           </p>
         </aside>
       </section>
