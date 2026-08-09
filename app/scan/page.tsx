@@ -3,6 +3,11 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
+  EMPTY_CAMERA_SCAN_STATE,
+  advanceCameraScanState,
+} from "../camera-scan-state";
+import type { CameraScanState } from "../camera-scan-state";
+import {
   Attendee,
   CHANNEL_NAME,
   LastScan,
@@ -82,7 +87,7 @@ export default function ScanPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const barcodeDetectorRef = useRef<BarcodeDetectorInstance | null>(null);
-  const lastCameraCodeRef = useRef("");
+  const cameraScanStateRef = useRef<CameraScanState>(EMPTY_CAMERA_SCAN_STATE);
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scanInputTimerRef = useRef<number | null>(null);
   const lastPresentedAtRef = useRef<string | null>(null);
@@ -105,7 +110,7 @@ export default function ScanPage() {
     cameraStreamRef.current?.getTracks().forEach((track) => track.stop());
     cameraStreamRef.current = null;
     barcodeDetectorRef.current = null;
-    lastCameraCodeRef.current = "";
+    cameraScanStateRef.current = EMPTY_CAMERA_SCAN_STATE;
     if (videoRef.current) videoRef.current.srcObject = null;
   }, []);
 
@@ -463,14 +468,13 @@ export default function ScanPage() {
       detector
         .detect(video)
         .then((barcodes) => {
-          const code = barcodes[0]?.rawValue.trim() ?? "";
-          if (!code) {
-            lastCameraCodeRef.current = "";
-            return;
-          }
-          if (code === lastCameraCodeRef.current) return;
-          lastCameraCodeRef.current = code;
-          processScan(code);
+          const transition = advanceCameraScanState(
+            cameraScanStateRef.current,
+            barcodes[0]?.rawValue ?? "",
+            performance.now(),
+          );
+          cameraScanStateRef.current = transition.state;
+          if (transition.codeToScan) processScan(transition.codeToScan);
         })
         .catch(() => undefined)
         .finally(() => {
