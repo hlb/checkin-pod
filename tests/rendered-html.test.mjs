@@ -49,7 +49,9 @@ test("server-renders the check-in application shell", async () => {
   const html = await response.text();
   assert.match(html, /<html[^>]*lang="zh-Hant"/i);
   assert.match(html, /<title>Checkin Pod｜活動報到輔助機<\/title>/i);
+  assert.match(html, /loading-brand-mark[^>]*>P</);
   assert.match(html, /正在還原這台裝置的報到紀錄/);
+  assert.doesNotMatch(html, /loading-mark[^>]*>到</);
 });
 
 test("provides separate admin and public benchmark, scanner, and projection routes", async () => {
