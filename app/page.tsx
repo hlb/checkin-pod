@@ -274,6 +274,7 @@ export default function Home() {
   const [eventHistory, setEventHistory] = useState<SharedEventHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyActionId, setHistoryActionId] = useState("");
+  const [selectedAttendeeId, setSelectedAttendeeId] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<SharedEventHistoryItem | null>(null);
   const [deletionInput, setDeletionInput] = useState("");
   const [deletionPasted, setDeletionPasted] = useState(false);
@@ -288,6 +289,15 @@ export default function Home() {
   const sharedEventId = event?.sharedEvent?.eventId;
   const sharedInitialCursor = event?.sharedEvent?.cursor ?? 0;
   const currentServerEventId = event?.sharedEvent?.eventId ?? "";
+  const selectedAttendee = selectedAttendeeId
+    ? event?.attendees.find((attendee) => attendee.id === selectedAttendeeId) ?? null
+    : null;
+  const attendeeOriginalFields = selectedAttendee
+    ? [...new Set([...(event?.headers ?? []), ...Object.keys(selectedAttendee.original)])].map((field) => ({
+        field,
+        value: selectedAttendee.original[field] ?? "",
+      }))
+    : [];
 
   const refreshLanes = useCallback(async () => {
     if (!sharedEventId || event?.checkInMode !== "multi") {
@@ -1326,10 +1336,6 @@ export default function Home() {
                   <small>播放彩蛋並引爆能量牆</small>
                 </div>
               </button>
-              <a href="/projection" target="_blank" rel="noreferrer">
-                <span aria-hidden="true">↗</span>
-                <div><strong>開啟投影牆</strong><small>投影電腦以相同網站網址開啟</small></div>
-              </a>
             </div>
 
             {event.checkInMode === "multi" && event.sharedEvent ? (
@@ -1397,6 +1403,47 @@ export default function Home() {
             ) : null}
 
             <div className="cockpit-grid">
+              <div className="scan-panel live-panel cockpit-live-panel">
+                <div className="scan-panel-head">
+                  <div><span className="live-dot" /><strong>來賓畫面即時更新</strong></div>
+                  <span className="scanner-hint">最近操作 {lastInputAt ? formatTime(lastInputAt) : "—"}</span>
+                </div>
+                <div className={`live-scan-result ${scanResult ? scanResult.kind : "idle"}`} aria-live="polite">
+                  {!scanResult ? (
+                    <>
+                      <span className="live-person-mark" aria-hidden="true">⌁</span>
+                      <div className="live-person-copy">
+                        <span>現在掃描</span>
+                        <strong>等待掃描或手動報到</strong>
+                        <p>結果也會顯示在另一個來賓畫面</p>
+                      </div>
+                    </>
+                  ) : scanResult.kind === "unknown" ? (
+                    <>
+                      <span className="live-person-mark" aria-hidden="true">?</span>
+                      <div className="live-person-copy">
+                        <span>找不到資料</span>
+                        <strong>這組 QR Code 不在名單中</strong>
+                        <p className="code-preview">{scanResult.code}</p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="avatar live-avatar">{scanResult.attendee.name.slice(0, 1).toUpperCase()}</span>
+                      <div className="live-person-copy">
+                        <span>{scanResult.kind === "success" ? "剛剛完成報到" : "重複掃描"}</span>
+                        <strong>{scanResult.attendee.name}</strong>
+                        <p>{scanResult.attendee.email || scanResult.attendee.phone || "沒有聯絡資料"} · {scanResult.attendee.ticket}</p>
+                      </div>
+                      <span className={`live-status ${scanResult.kind}`}>{scanResult.kind === "success" ? "已報到" : "已報到過"}</span>
+                    </>
+                  )}
+                </div>
+                <div className="live-panel-actions">
+                  <span>掃描或手動報到都會更新此處</span>
+                </div>
+              </div>
+
               <article className="cockpit-card rate-overview">
                 <div className="cockpit-card-heading">
                   <div><span>目前報到率</span><small>CHECK-IN RATE</small></div>
@@ -1422,6 +1469,32 @@ export default function Home() {
                   <div><span>缺少 QR</span><strong className={withoutQr ? "warn" : ""}>{withoutQr}</strong></div>
                 </div>
                 <p className="metric-definition">報到率 = 已報到人數 ÷ 可報到名單總數</p>
+              </article>
+
+              <article className="cockpit-card recent-arrivals-card">
+                <div className="cockpit-card-heading">
+                  <div><span>最近抵達</span><small>LIVE ARRIVALS</small></div>
+                  <strong>{recentArrivals.length ? `最近 ${recentArrivals.length} 位` : "等待中"}</strong>
+                </div>
+                {recentArrivals.length ? (
+                  <div className="recent-arrivals-list">
+                    {recentArrivals.map((attendee) => (
+                      <button
+                        type="button"
+                        className="recent-arrival"
+                        key={attendee.id}
+                        onClick={() => setSelectedAttendeeId(attendee.id)}
+                        aria-label={`查看 ${attendee.name} 的詳細資料`}
+                      >
+                        <span className="recent-avatar">{attendee.name.slice(0, 1).toUpperCase()}</span>
+                        <span className="recent-arrival-copy"><strong>{attendee.name}</strong><small>{attendee.ticket}</small></span>
+                        <time dateTime={attendee.checkedInAt ?? undefined}>{formatTime(attendee.checkedInAt)}</time>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="recent-empty"><span>第一位來賓報到後會出現在這裡</span></div>
+                )}
               </article>
 
               <article className="cockpit-card arrival-chart-card">
@@ -1462,68 +1535,6 @@ export default function Home() {
                   </div>
                 )}
                 <p className="chart-source">資料來源：伺服器名單中的實際報到時間，不含預測資料</p>
-              </article>
-
-              <div className="scan-panel live-panel cockpit-live-panel">
-                <div className="scan-panel-head">
-                  <div><span className="live-dot" /><strong>來賓畫面即時更新</strong></div>
-                  <span className="scanner-hint">最近操作 {lastInputAt ? formatTime(lastInputAt) : "—"}</span>
-                </div>
-                <div className={`live-scan-result ${scanResult ? scanResult.kind : "idle"}`} aria-live="polite">
-                  {!scanResult ? (
-                    <>
-                      <span className="live-person-mark" aria-hidden="true">⌁</span>
-                      <div className="live-person-copy">
-                        <span>現在掃描</span>
-                        <strong>等待掃描或手動報到</strong>
-                        <p>結果也會顯示在另一個來賓畫面</p>
-                      </div>
-                    </>
-                  ) : scanResult.kind === "unknown" ? (
-                    <>
-                      <span className="live-person-mark" aria-hidden="true">?</span>
-                      <div className="live-person-copy">
-                        <span>找不到資料</span>
-                        <strong>這組 QR Code 不在名單中</strong>
-                        <p className="code-preview">{scanResult.code}</p>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <span className="avatar live-avatar">{scanResult.attendee.name.slice(0, 1).toUpperCase()}</span>
-                      <div className="live-person-copy">
-                        <span>{scanResult.kind === "success" ? "剛剛完成報到" : "重複掃描"}</span>
-                        <strong>{scanResult.attendee.name}</strong>
-                        <p>{scanResult.attendee.email || scanResult.attendee.phone || "沒有聯絡資料"} · {scanResult.attendee.ticket}</p>
-                      </div>
-                      <span className={`live-status ${scanResult.kind}`}>{scanResult.kind === "success" ? "已報到" : "已報到過"}</span>
-                    </>
-                  )}
-                </div>
-                <div className="live-panel-actions">
-                  <a href="/scan" target="_blank" rel="noreferrer">開啟來賓掃描頁 ↗</a>
-                  <span>掃描或手動報到都會更新此處</span>
-                </div>
-              </div>
-
-              <article className="cockpit-card recent-arrivals-card">
-                <div className="cockpit-card-heading">
-                  <div><span>最近抵達</span><small>LIVE ARRIVALS</small></div>
-                  <strong>{recentArrivals.length ? `最近 ${recentArrivals.length} 位` : "等待中"}</strong>
-                </div>
-                {recentArrivals.length ? (
-                  <div className="recent-arrivals-list">
-                    {recentArrivals.map((attendee) => (
-                      <div className="recent-arrival" key={attendee.id}>
-                        <span className="recent-avatar">{attendee.name.slice(0, 1).toUpperCase()}</span>
-                        <div><strong>{attendee.name}</strong><small>{attendee.ticket}</small></div>
-                        <time dateTime={attendee.checkedInAt ?? undefined}>{formatTime(attendee.checkedInAt)}</time>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="recent-empty"><span>第一位來賓報到後會出現在這裡</span></div>
-                )}
               </article>
             </div>
           </section>
@@ -1651,10 +1662,15 @@ export default function Home() {
                   {pagedAttendees.map((attendee) => (
                     <tr key={attendee.id} className={attendee.checkedInAt ? "is-checked" : ""}>
                       <td>
-                        <div className="guest-identity">
+                        <button
+                          type="button"
+                          className="guest-identity guest-detail-trigger"
+                          onClick={() => setSelectedAttendeeId(attendee.id)}
+                          aria-label={`查看 ${attendee.name} 的詳細資料`}
+                        >
                           <span className="avatar">{attendee.name.slice(0, 1).toUpperCase()}</span>
                           <div><strong>{attendee.name}</strong><span>{attendee.email || attendee.phone || "沒有聯絡資料"}</span></div>
-                        </div>
+                        </button>
                       </td>
                       <td><span className="ticket-chip">{attendee.ticket}</span></td>
                       <td><span className="approval-text">{attendee.approvalStatus || "—"}</span></td>
@@ -1692,6 +1708,66 @@ export default function Home() {
           </section>
         </>
       )}
+
+      {selectedAttendee && event ? (
+        <div
+          className="attendee-detail-overlay"
+          role="presentation"
+          onKeyDown={(keyboardEvent) => {
+            if (keyboardEvent.key === "Escape") setSelectedAttendeeId(null);
+          }}
+          onMouseDown={(mouseEvent) => {
+            if (mouseEvent.target === mouseEvent.currentTarget) setSelectedAttendeeId(null);
+          }}
+        >
+          <section
+            className="attendee-detail-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="attendee-detail-title"
+            aria-describedby="attendee-detail-description"
+          >
+            <button
+              type="button"
+              className="attendee-detail-close"
+              onClick={() => setSelectedAttendeeId(null)}
+              aria-label="關閉來賓詳細資料"
+              autoFocus
+            >
+              ×
+            </button>
+            <p className="section-kicker">Guest details</p>
+            <div className="attendee-detail-heading">
+              <span className="avatar">{selectedAttendee.name.slice(0, 1).toUpperCase()}</span>
+              <div>
+                <h2 id="attendee-detail-title">{selectedAttendee.name}</h2>
+                <p id="attendee-detail-description">
+                  {selectedAttendee.checkedInAt ? "已完成報到" : "尚未報到"} · {selectedAttendee.ticket || "未提供票種"}
+                </p>
+              </div>
+            </div>
+            <dl className="attendee-summary-grid">
+              <div><dt>Email</dt><dd>{selectedAttendee.email || "—"}</dd></div>
+              <div><dt>電話</dt><dd>{selectedAttendee.phone || "—"}</dd></div>
+              <div><dt>票種</dt><dd>{selectedAttendee.ticket || "—"}</dd></div>
+              <div><dt>報名狀態</dt><dd>{selectedAttendee.approvalStatus || "—"}</dd></div>
+              <div><dt>報到時間</dt><dd>{selectedAttendee.checkedInAt ? formatTime(selectedAttendee.checkedInAt, true) : "尚未報到"}</dd></div>
+            </dl>
+            <div className="attendee-original-heading">
+              <strong>原始名單欄位</strong>
+              <span>{attendeeOriginalFields.length} 個欄位</span>
+            </div>
+            <dl className="attendee-original-fields">
+              {attendeeOriginalFields.map(({ field, value }) => (
+                <div key={field}>
+                  <dt>{field}</dt>
+                  <dd>{value.trim() || "—"}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        </div>
+      ) : null}
 
       <section className="event-history-section" aria-labelledby="event-history-title">
         <div className="event-history-heading">
