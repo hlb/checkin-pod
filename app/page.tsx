@@ -282,6 +282,7 @@ export default function Home() {
   const scanInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backgroundInputRef = useRef<HTMLInputElement>(null);
+  const attendeeDetailCloseRef = useRef<HTMLButtonElement>(null);
   const deletionInputRef = useRef<HTMLInputElement>(null);
   const scanBufferRef = useRef("");
   const lastKeyAtRef = useRef(0);
@@ -438,6 +439,12 @@ export default function Home() {
     const timer = window.setTimeout(() => scanInputRef.current?.focus(), 80);
     return () => window.clearTimeout(timer);
   }, [ready, event]);
+
+  useEffect(() => {
+    if (!selectedAttendeeId) return;
+    const timer = window.setTimeout(() => attendeeDetailCloseRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedAttendeeId]);
 
   const performScan = useCallback(
     async (rawCode: string, scannedAt: string, requestId: string) => {
@@ -1728,11 +1735,11 @@ export default function Home() {
             aria-describedby="attendee-detail-description"
           >
             <button
+              ref={attendeeDetailCloseRef}
               type="button"
               className="attendee-detail-close"
               onClick={() => setSelectedAttendeeId(null)}
               aria-label="關閉來賓詳細資料"
-              autoFocus
             >
               ×
             </button>
