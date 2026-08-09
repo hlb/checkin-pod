@@ -322,6 +322,14 @@ test("wires persistence, scanner, secured projection feed, and event controls", 
   assert.match(projectionPage, /energy-planet-canvas/);
   assert.match(projectionPage, /drawSettledPlanet/);
   assert.match(projectionPage, /sharedEvent\.eventName/);
+  assert.match(projectionPage, /void syncProjection\(\);/);
+  assert.match(projectionPage, /const synced = await syncProjection\(\)/);
+  assert.ok(
+    projectionPage.indexOf("const synced = await syncProjection()") < projectionPage.indexOf("setActivated(true)"),
+    "projection activation must wait for a fresh server snapshot",
+  );
+  assert.match(projectionPage, /snapshot \? checkedIn\.length : "—"/);
+  assert.match(projectionPage, /正在從中控台取得目前報到數據/);
   assert.match(projectionPage, /type-\$\{appearance\.type\}/);
   assert.match(planetVariants, /PLANET_PALETTES/);
   assert.match(planetVariants, /PLANET_TYPES/);

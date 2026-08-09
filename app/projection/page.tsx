@@ -161,6 +161,8 @@ function burstStyle(index: number, seed: number) {
 export default function ProjectionPage() {
   const [snapshot, setSnapshot] = useState<LiveEventSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
+  const [initialSyncComplete, setInitialSyncComplete] = useState(false);
+  const [activating, setActivating] = useState(false);
   const [activated, setActivated] = useState(false);
   const [arrivalQueue, setArrivalQueue] = useState<Entrance[]>([]);
   const [activeEntrance, setActiveEntrance] = useState<Entrance | null>(null);
@@ -179,6 +181,8 @@ export default function ProjectionPage() {
   const checkedInRef = useRef<LiveAttendee[]>([]);
   const snapshotRef = useRef<LiveEventSnapshot | null>(null);
   const sharedCursorRef = useRef<number | null>(null);
+  const projectionMountedRef = useRef(false);
+  const syncPromiseRef = useRef<Promise<boolean> | null>(null);
   const planetCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -305,6 +309,70 @@ export default function ProjectionPage() {
     snapshotRef.current = nextSnapshot;
   }, [handleCue]);
 
+  const syncProjection = useCallback(async () => {
+    if (syncPromiseRef.current) return syncPromiseRef.current;
+
+    const syncRequest = (async () => {
+      try {
+        const currentSharedCursor = sharedCursorRef.current;
+        const query = new URLSearchParams({ mode: "projection" });
+        if (currentSharedCursor !== null) query.set("after", String(currentSharedCursor));
+        const response = await fetch(`/api/shared-checkin?${query}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("sync_failed");
+        const body = (await response.json()) as { event?: SharedProjectionEvent | null };
+        if (!projectionMountedRef.current) return false;
+
+        const sharedEvent = body.event ?? null;
+        if (!sharedEvent) {
+          sharedCursorRef.current = null;
+          applySnapshot(null);
+        } else if (sharedEvent.attendees) {
+          sharedCursorRef.current = sharedEvent.cursor;
+          applySnapshot({
+            eventId: sharedEvent.eventId,
+            fileName: sharedEvent.eventName,
+            total: sharedEvent.total,
+            revision: sharedEvent.cursor,
+            updatedAt: new Date().toISOString(),
+            attendees: sharedEvent.attendees,
+            cue: sharedEvent.cue,
+          });
+        } else if (snapshotRef.current?.eventId !== sharedEvent.eventId) {
+          sharedCursorRef.current = null;
+        } else {
+          const attendees = new Map(snapshotRef.current.attendees.map((attendee) => [attendee.id, attendee]));
+          for (const change of sharedEvent.changes ?? []) {
+            if (change.checkedInAt) attendees.set(change.id, change);
+            else attendees.delete(change.id);
+          }
+          sharedCursorRef.current = sharedEvent.cursor;
+          applySnapshot({
+            ...snapshotRef.current,
+            fileName: sharedEvent.eventName,
+            total: sharedEvent.total,
+            revision: sharedEvent.cursor,
+            updatedAt: new Date().toISOString(),
+            attendees: [...attendees.values()],
+            cue: sharedEvent.cue,
+          });
+        }
+        setConnected(true);
+        setInitialSyncComplete(true);
+        return true;
+      } catch {
+        if (projectionMountedRef.current) setConnected(false);
+        return false;
+      }
+    })();
+
+    syncPromiseRef.current = syncRequest;
+    try {
+      return await syncRequest;
+    } finally {
+      if (syncPromiseRef.current === syncRequest) syncPromiseRef.current = null;
+    }
+  }, [applySnapshot]);
+
   useEffect(() => {
     const cleanupTimers = cleanupTimersRef.current;
     const boardingAudio = new Audio("/audio/boarding-announcement.mp3");
@@ -313,61 +381,12 @@ export default function ProjectionPage() {
     celebrationAudio.preload = "auto";
     boardingAudioRef.current = boardingAudio;
     celebrationAudioRef.current = celebrationAudio;
+    projectionMountedRef.current = true;
 
-    let disposed = false;
-    const poll = async () => {
-      try {
-        const currentSharedCursor = sharedCursorRef.current;
-        const query = new URLSearchParams({ mode: "projection" });
-        if (currentSharedCursor !== null) query.set("after", String(currentSharedCursor));
-        const response = await fetch(`/api/shared-checkin?${query}`, { cache: "no-store" });
-        if (!response.ok) throw new Error("sync_failed");
-        const body = (await response.json()) as { event?: SharedProjectionEvent | null };
-        if (!disposed) {
-          const sharedEvent = body.event ?? null;
-          if (!sharedEvent) {
-            sharedCursorRef.current = null;
-            applySnapshot(null);
-          } else if (sharedEvent.attendees) {
-            sharedCursorRef.current = sharedEvent.cursor;
-            applySnapshot({
-              eventId: sharedEvent.eventId,
-              fileName: sharedEvent.eventName,
-              total: sharedEvent.total,
-              revision: sharedEvent.cursor,
-              updatedAt: new Date().toISOString(),
-              attendees: sharedEvent.attendees,
-              cue: sharedEvent.cue,
-            });
-          } else if (snapshotRef.current?.eventId !== sharedEvent.eventId) {
-            sharedCursorRef.current = null;
-          } else {
-            const attendees = new Map(snapshotRef.current.attendees.map((attendee) => [attendee.id, attendee]));
-            for (const change of sharedEvent.changes ?? []) {
-              if (change.checkedInAt) attendees.set(change.id, change);
-              else attendees.delete(change.id);
-            }
-            sharedCursorRef.current = sharedEvent.cursor;
-            applySnapshot({
-              ...snapshotRef.current,
-              fileName: sharedEvent.eventName,
-              total: sharedEvent.total,
-              revision: sharedEvent.cursor,
-              updatedAt: new Date().toISOString(),
-              attendees: [...attendees.values()],
-              cue: sharedEvent.cue,
-            });
-          }
-          setConnected(true);
-        }
-      } catch {
-        if (!disposed) setConnected(false);
-      }
-    };
-    void poll();
-    const interval = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+    void syncProjection();
+    const interval = window.setInterval(() => void syncProjection(), POLL_INTERVAL_MS);
     return () => {
-      disposed = true;
+      projectionMountedRef.current = false;
       window.clearInterval(interval);
       cleanupTimers.forEach((timer) => window.clearTimeout(timer));
       cleanupTimers.clear();
@@ -376,7 +395,7 @@ export default function ProjectionPage() {
       boardingAudioRef.current = null;
       celebrationAudioRef.current = null;
     };
-  }, [applySnapshot]);
+  }, [syncProjection]);
 
   useEffect(() => {
     const canvas = planetCanvasRef.current;
@@ -428,6 +447,7 @@ export default function ProjectionPage() {
   }, [activated, checkedInSignature, scheduleCleanup]);
 
   const activateProjection = async () => {
+    setActivating(true);
     for (const sound of [boardingAudioRef.current, celebrationAudioRef.current]) {
       if (!sound) continue;
       sound.muted = true;
@@ -436,8 +456,14 @@ export default function ProjectionPage() {
       sound.currentTime = 0;
       sound.muted = false;
     }
+    const synced = await syncProjection();
+    if (!synced && !snapshotRef.current) {
+      setActivating(false);
+      return;
+    }
     activatedRef.current = true;
     setActivated(true);
+    setActivating(false);
     if (pendingCueRef.current) {
       const pendingCue = pendingCueRef.current;
       pendingCueRef.current = null;
@@ -460,13 +486,15 @@ export default function ProjectionPage() {
 
       <section
         className="energy-field"
-        aria-label={`全場能量體，目前 ${checkedIn.length} 位來賓形成 ${checkedIn.length} 顆星球`}
+        aria-label={snapshot
+          ? `全場能量體，目前 ${checkedIn.length} 位來賓形成 ${checkedIn.length} 顆星球`
+          : "正在等待中控台資料"}
       >
         <div className="energy-halo halo-one" />
         <div className="energy-halo halo-two" />
         <canvas className="energy-planet-canvas" ref={planetCanvasRef} aria-hidden="true" />
         <div className="projection-energy-core">
-          <span>{checkedIn.length}</span>
+          <span>{snapshot ? checkedIn.length : "—"}</span>
           <small>PLANETS</small>
         </div>
         {activeEntrance ? (() => {
@@ -530,12 +558,12 @@ export default function ProjectionPage() {
       <footer className="projection-footer">
         <div className="projection-progress-copy">
           <span>全場能量</span>
-          <strong>{rate}%</strong>
+          <strong>{snapshot ? `${rate}%` : "—"}</strong>
         </div>
-        <div className="projection-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={rate}>
+        <div className="projection-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={snapshot ? rate : undefined}>
           <i style={{ width: `${rate}%` }} />
         </div>
-        <span>{checkedIn.length} / {total || "—"} 位已抵達</span>
+        <span>{snapshot ? `${checkedIn.length} / ${total} 位已抵達` : "等待中控台資料"}</span>
       </footer>
 
       {!activated ? (
@@ -544,8 +572,14 @@ export default function ProjectionPage() {
             <span className="projection-start-mark">✦</span>
             <p>PROJECTOR MODE</p>
             <h1>啟動全場能量牆</h1>
-            <span>按下後會進入全螢幕，並允許中控台播放登車廣播與彩蛋音效。</span>
-            <button type="button" onClick={() => void activateProjection()}>開始投影</button>
+            <span>{initialSyncComplete
+              ? snapshot
+                ? `已同步 ${checkedIn.length} / ${total} 位報到數據。按下後會進入全螢幕，並允許中控台播放音效。`
+                : "目前沒有進行中的活動，投影牆會繼續等待中控台。"
+              : "正在從中控台取得目前報到數據，完成後即可開始投影。"}</span>
+            <button type="button" disabled={activating} onClick={() => void activateProjection()}>
+              {activating ? "正在取得最新數據…" : "開始投影"}
+            </button>
           </div>
         </div>
       ) : null}

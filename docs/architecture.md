@@ -1,6 +1,6 @@
 # Checkin Pod 系統架構
 
-文件版本：2026-08-08
+文件版本：2026-08-09
 
 對應程式版本：`main`
 狀態：現況文件
@@ -63,7 +63,7 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 6. `/scan` 從同一個瀏覽器 profile 讀取活動連線。
 7. 每次掃描呼叫 `POST scan`。手動報到呼叫 `POST set_attendee`。
 8. D1 原子判定成功、重複或未知，並立即寫入 activity。
-9. 中控台透過 ordered changes feed 取得最新狀態。`/projection` 透過 projection feed 取得 snapshot 或 cursor changes。
+9. 中控台透過 ordered changes feed 取得最新狀態。`/projection` 開啟時先從 projection feed 取得完整 snapshot，再依 cursor 取得後續 changes。
 
 完整原始 CSV row 留在管理瀏覽器。D1 保存活動復原與報到需要的欄位，單筆最小化 `original_json` 上限為 20 KB。
 
@@ -81,7 +81,7 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 8. API 寫入帶有唯一 `request_id` 的 activity。
 9. scan response 只包含固定識別欄位與 server-side allowlist 產生的 `displayValues`。
 10. 中控台透過 ordered changes feed 合併所有工作站結果。
-11. 投影頁面透過 projection feed 取得 snapshot 或 cursor changes。
+11. 投影頁面開啟時先透過 projection feed 取得完整 snapshot，再依 cursor 取得後續 changes。
 
 ### 4.3 一致性規則
 
