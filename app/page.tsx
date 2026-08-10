@@ -35,6 +35,7 @@ import {
 import type { CheckInMode, ProjectionCueType, ProjectionPrivacy } from "./checkin-core";
 import {
   MAX_SHARED_ATTENDEES,
+  attendeeForSharedId,
   applySharedChanges,
   applySharedScanResult,
   createSharedLane,
@@ -46,7 +47,9 @@ import {
   fetchActiveSharedEventSummary,
   fetchCompleteSharedRoster,
   fetchSharedLanes,
+  hasCanonicalSharedAttendeeIds,
   importSharedEvent,
+  reconcileSharedEventRoster,
   renameSharedLane,
   renameSharedEvent,
   restoreSharedEvent,
@@ -228,9 +231,7 @@ async function prepareBackgroundImage(file: File) {
 
 function resultFromSavedEvent(saved: SavedEvent | null): ScanResult | null {
   if (!saved?.lastScan) return null;
-  const attendee = saved.lastScan.attendeeId
-    ? saved.attendees.find((item) => item.id === saved.lastScan?.attendeeId)
-    : undefined;
+  const attendee = attendeeForSharedId(saved, saved.lastScan.attendeeId);
   if (saved.lastScan.kind === "unknown") {
     return {
       kind: "unknown",
@@ -339,6 +340,18 @@ export default function Home() {
             }
           } catch {
             setError("舊版單機活動無法連接伺服器。請從活動歷史載入，或重新匯入 CSV。");
+          }
+        }
+        if (saved?.sharedEvent && !hasCanonicalSharedAttendeeIds(saved)) {
+          try {
+            const restored = await fetchCompleteSharedRoster(saved.sharedEvent.eventId);
+            if (restored.event) {
+              saved = reconcileSharedEventRoster(saved, restored.attendees, restored.event.cursor);
+              await writeSavedEvent(saved);
+              broadcastEventChange();
+            }
+          } catch {
+            setError("已偵測到舊版名單編號，但暫時無法向伺服器校正。請檢查網路後重新整理。");
           }
         }
         setEvent(saved);
@@ -467,9 +480,10 @@ export default function Home() {
         const next = applySharedScanResult(current, { ...sharedOutcome, code });
         await writeSavedEvent(next);
         broadcastEventChange();
-        const attendee = sharedOutcome.attendee
-          ? next.attendees.find((candidate) => candidate.id === sharedOutcome.attendee?.id)
-          : undefined;
+        const attendee = attendeeForSharedId(next, sharedOutcome.attendee?.id);
+        if (sharedOutcome.kind !== "unknown" && !attendee) {
+          throw new Error("伺服器回傳的來賓不在目前名單中。請重新整理中控台後再掃描。");
+        }
         setEvent(next);
         setScanResult(sharedOutcome.kind === "unknown"
           ? { kind: "unknown", code, message: "名單中找不到這組 QR Code" }

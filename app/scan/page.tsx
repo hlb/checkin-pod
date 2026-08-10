@@ -21,7 +21,12 @@ import {
   scanKeysFor,
   writeSavedEvent,
 } from "../checkin-core";
-import { activateSharedLane, readSharedLane, scanSharedEvent } from "../shared-checkin";
+import {
+  activateSharedLane,
+  attendeeForSharedId,
+  readSharedLane,
+  scanSharedEvent,
+} from "../shared-checkin";
 import type { SharedAttendeeResult, SharedEventMetadata, SharedLaneBootstrap, SharedLaneSession } from "../shared-checkin";
 
 type GuestResult = {
@@ -55,9 +60,7 @@ function cameraDevicesFrom(devices: MediaDeviceInfo[]): CameraDevice[] {
 
 function guestResultFromSavedEvent(saved: SavedEvent | null): GuestResult | null {
   if (!saved?.lastScan) return null;
-  const attendee = saved.lastScan.attendeeId
-    ? saved.attendees.find((item) => item.id === saved.lastScan?.attendeeId)
-    : undefined;
+  const attendee = attendeeForSharedId(saved, saved.lastScan.attendeeId);
   if (saved.lastScan.kind === "unknown") {
     return { kind: "unknown", at: saved.lastScan.at };
   }

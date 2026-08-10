@@ -136,6 +136,60 @@ export class SharedApiError extends Error {
 
 }
 
+function canonicalSharedAttendeeId(index: number) {
+  return `guest-${index + 1}`;
+}
+
+export function hasCanonicalSharedAttendeeIds(event: Pick<SavedEvent, "attendees">) {
+  return event.attendees.every((attendee, index) => attendee.id === canonicalSharedAttendeeId(index));
+}
+
+export function attendeeForSharedId(
+  event: Pick<SavedEvent, "attendees" | "sharedEvent">,
+  attendeeId: string | null | undefined,
+) {
+  if (!attendeeId) return undefined;
+  if (event.sharedEvent) {
+    const match = /^guest-([1-9]\d*)$/.exec(attendeeId);
+    const position = match ? Number(match[1]) - 1 : -1;
+    if (position >= 0 && position < event.attendees.length) return event.attendees[position];
+  }
+  return event.attendees.find((attendee) => attendee.id === attendeeId);
+}
+
+export function reconcileSharedEventRoster(
+  event: SavedEvent,
+  roster: Attendee[],
+  cursor: number,
+) {
+  if (!event.sharedEvent || roster.length !== event.attendees.length) {
+    throw new Error("伺服器名單與瀏覽器名單的人數不同，無法自動校正。");
+  }
+  const attendees = event.attendees.map((attendee, index) => {
+    const serverAttendee = roster[index];
+    const id = canonicalSharedAttendeeId(index);
+    if (serverAttendee.id !== id) {
+      throw new Error("伺服器名單順序不正確，無法自動校正。");
+    }
+    return { ...attendee, id, checkedInAt: serverAttendee.checkedInAt };
+  });
+  return {
+    ...event,
+    attendees,
+    lastScan: event.lastScan?.kind === "unknown" ? event.lastScan : undefined,
+    sharedEvent: { ...event.sharedEvent, cursor },
+    revision: (event.revision ?? 0) + 1,
+  };
+}
+
+function attendeesWithCanonicalSharedIds(event: SavedEvent) {
+  if (hasCanonicalSharedAttendeeIds(event)) return event.attendees;
+  return event.attendees.map((attendee, index) => ({
+    ...attendee,
+    id: canonicalSharedAttendeeId(index),
+  }));
+}
+
 type JsonResponse = Record<string, unknown>;
 let adminInitialization: Promise<void> | null = null;
 
@@ -309,7 +363,10 @@ export async function fetchSharedChanges(eventId: string, after: number) {
 }
 
 export function applySharedChanges(event: SavedEvent, changes: SharedChange[], cursor: number): SavedEvent {
-  if (!event.sharedEvent || !changes.length && cursor === event.sharedEvent.cursor) return event;
+  if (!event.sharedEvent) return event;
+  const canonicalAttendees = attendeesWithCanonicalSharedIds(event);
+  if (!changes.length && cursor === event.sharedEvent.cursor
+    && canonicalAttendees === event.attendees) return event;
   const states = new Map<string, string | null>();
   for (const change of changes) {
     if (!change.attendeeId) continue;
@@ -335,21 +392,22 @@ export function applySharedChanges(event: SavedEvent, changes: SharedChange[], c
     lastScan,
     sharedEvent: { ...event.sharedEvent, cursor },
     attendees: states.size
-      ? event.attendees.map((attendee) => states.has(attendee.id)
+      ? canonicalAttendees.map((attendee) => states.has(attendee.id)
         ? { ...attendee, checkedInAt: states.get(attendee.id) ?? null }
         : attendee)
-      : event.attendees,
+      : canonicalAttendees,
   };
 }
 
 export function applySharedScanResult(event: SavedEvent, result: SharedScanResult): SavedEvent {
   if (!event.sharedEvent) return event;
   const attendeeId = result.attendee?.id;
+  const canonicalAttendees = attendeesWithCanonicalSharedIds(event);
   const nextAttendees = attendeeId && result.kind === "success"
-    ? event.attendees.map((attendee) => attendee.id === attendeeId
+    ? canonicalAttendees.map((attendee) => attendee.id === attendeeId
       ? { ...attendee, checkedInAt: result.attendee?.checkedInAt ?? result.at }
       : attendee)
-    : event.attendees;
+    : canonicalAttendees;
   return {
     ...event,
     revision: (event.revision ?? 0) + 1,

@@ -95,6 +95,7 @@ test("imports KKTIX attendee fields, QR serials, payment status, and attendance 
   assert.equal(attendees[0].checkedInAt, "2026-08-07T18:58:42+08:00");
   assert.ok(attendees[0].scanKeys.includes("ab12"));
   assert.ok(attendees[0].scanKeys.includes("223456789"));
+  assert.deepEqual(attendees.map((attendee) => attendee.id), ["guest-1", "guest-2"]);
   assert.equal(attendees[1].checkedInAt, null);
   assert.equal(labelForField("聯絡人 姓名"), "姓名");
   assert.equal(labelForField("聯絡人 Email"), "Email");

@@ -322,11 +322,15 @@ export function filterEligibleAttendees(attendees: Attendee[]) {
   const hasRecognizedStatus = attendees.some((attendee) =>
     ELIGIBLE_APPROVAL_STATUSES.has(attendee.approvalStatus.toLowerCase()),
   );
-  return hasRecognizedStatus
+  const eligibleAttendees = hasRecognizedStatus
     ? attendees.filter((attendee) =>
         ELIGIBLE_APPROVAL_STATUSES.has(attendee.approvalStatus.toLowerCase()),
       )
     : attendees;
+  return eligibleAttendees.map((attendee, index) => {
+    const id = `guest-${index + 1}`;
+    return attendee.id === id ? attendee : { ...attendee, id };
+  });
 }
 
 function openDatabase(databaseName = DB_NAME): Promise<IDBDatabase> {

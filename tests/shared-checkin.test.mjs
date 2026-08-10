@@ -10,6 +10,9 @@ import {
   SharedApiError,
   applySharedChanges,
   applySharedScanResult,
+  attendeeForSharedId,
+  hasCanonicalSharedAttendeeIds,
+  reconcileSharedEventRoster,
   assertSharedCapacity,
   chunkItems,
   scanSharedEvent,
@@ -395,7 +398,7 @@ test("stores 10,000 attendees and uses indexed QR and activity cursor lookups", 
 
 test("applies paged changes without losing prior attendee state or moving the cursor backward", () => {
   const attendees = Array.from({ length: 1_000 }, (_, index) => ({
-    id: `guest-${index}`,
+    id: `guest-${index + 1}`,
     name: `Guest ${index}`,
     email: "",
     phone: "",
@@ -416,14 +419,14 @@ test("applies paged changes without losing prior attendee state or moving the cu
   };
   const firstPage = Array.from({ length: 500 }, (_, index) => ({
     id: index + 1,
-    attendeeId: `guest-${index}`,
+    attendeeId: `guest-${index + 1}`,
     outcome: "success",
     checkedInAt: `2026-08-08T01:00:${String(index % 60).padStart(2, "0")}.000Z`,
     occurredAt: `2026-08-08T01:00:${String(index % 60).padStart(2, "0")}.000Z`,
   }));
   const secondPage = Array.from({ length: 500 }, (_, index) => ({
     id: index + 501,
-    attendeeId: `guest-${index + 500}`,
+    attendeeId: `guest-${index + 501}`,
     outcome: "success",
     checkedInAt: `2026-08-08T01:01:${String(index % 60).padStart(2, "0")}.000Z`,
     occurredAt: `2026-08-08T01:01:${String(index % 60).padStart(2, "0")}.000Z`,
@@ -434,7 +437,7 @@ test("applies paged changes without losing prior attendee state or moving the cu
   assert.equal(first.attendees.filter((attendee) => attendee.checkedInAt).length, 500);
   assert.equal(second.attendees.filter((attendee) => attendee.checkedInAt).length, 1_000);
   assert.equal(second.sharedEvent.cursor, 1_000);
-  assert.equal(second.lastScan.attendeeId, "guest-999");
+  assert.equal(second.lastScan.attendeeId, "guest-1000");
 });
 
 test("a direct scan response cannot skip unseen activity from another client", () => {
@@ -460,6 +463,67 @@ test("a direct scan response cannot skip unseen activity from another client", (
 
   assert.equal(next.attendees[0].checkedInAt, "2026-08-08T01:00:00.000Z");
   assert.equal(next.sharedEvent.cursor, 40, "activity 41 must still be fetched from the ordered changes feed");
+});
+
+test("repairs legacy attendee IDs after eligibility filtering and applies server changes by roster position", () => {
+  const attendees = ["guest-1", "guest-3", "guest-4"].map((id, index) => ({
+    id, name: `Guest ${index + 1}`, email: "", phone: "", ticket: "General",
+    approvalStatus: "approved", qrValue: `QR-${index + 1}`, scanKeys: [`qr-${index + 1}`],
+    checkedInAt: index === 1 ? "2026-08-08T00:30:00.000Z" : null,
+    original: { name: `Guest ${index + 1}` },
+  }));
+  const event = {
+    version: 1,
+    fileName: "guests.csv",
+    importedAt: "2026-08-08T00:00:00.000Z",
+    headers: ["name"],
+    attendees,
+    sharedEvent: { eventId: "event-1", laneId: "lane-1", laneName: "入口 A", cursor: 1 },
+  };
+
+  assert.equal(hasCanonicalSharedAttendeeIds(event), false);
+  assert.equal(attendeeForSharedId(event, "guest-3").name, "Guest 3");
+
+  const changed = applySharedChanges(event, [{
+    id: 2,
+    attendeeId: "guest-3",
+    outcome: "success",
+    checkedInAt: "2026-08-08T01:00:00.000Z",
+    occurredAt: "2026-08-08T01:00:00.000Z",
+  }], 2);
+  assert.deepEqual(changed.attendees.map((attendee) => attendee.id), ["guest-1", "guest-2", "guest-3"]);
+  assert.equal(changed.attendees[2].checkedInAt, "2026-08-08T01:00:00.000Z");
+});
+
+test("reconciles a legacy cached roster with authoritative server check-in state", () => {
+  const attendees = ["guest-1", "guest-3"].map((id, index) => ({
+    id, name: `Guest ${index + 1}`, email: "", phone: "", ticket: "General",
+    approvalStatus: "approved", qrValue: `QR-${index + 1}`, scanKeys: [`qr-${index + 1}`],
+    checkedInAt: index === 0 ? "2026-08-08T00:30:00.000Z" : null,
+    original: { private: `source-${index + 1}` },
+  }));
+  const event = {
+    version: 1,
+    fileName: "guests.csv",
+    importedAt: "2026-08-08T00:00:00.000Z",
+    headers: ["private"],
+    attendees,
+    lastScan: { kind: "success", attendeeId: "guest-1", at: "2026-08-08T00:30:00.000Z" },
+    sharedEvent: { eventId: "event-1", laneId: "lane-1", laneName: "入口 A", cursor: 2 },
+  };
+  const roster = attendees.map((attendee, index) => ({
+    ...attendee,
+    id: `guest-${index + 1}`,
+    checkedInAt: index === 1 ? "2026-08-08T01:00:00.000Z" : null,
+    original: {},
+  }));
+
+  const reconciled = reconcileSharedEventRoster(event, roster, 9);
+  assert.deepEqual(reconciled.attendees.map((attendee) => attendee.id), ["guest-1", "guest-2"]);
+  assert.deepEqual(reconciled.attendees.map((attendee) => attendee.checkedInAt), [null, "2026-08-08T01:00:00.000Z"]);
+  assert.deepEqual(reconciled.attendees.map((attendee) => attendee.original.private), ["source-1", "source-2"]);
+  assert.equal(reconciled.sharedEvent.cursor, 9);
+  assert.equal(reconciled.lastScan, undefined);
 });
 
 test("SQL migrations add retention and relational integrity while removing the legacy API table", async () => {
