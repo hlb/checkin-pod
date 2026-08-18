@@ -95,13 +95,48 @@ const WRITE_LOCK_NAME = "checkin-pod-write";
 let fallbackWriteQueue: Promise<void> = Promise.resolve();
 
 const FIELD_ALIASES = {
-  name: ["name", "full_name", "guest_name", "attendee_name", "姓名", "名字", "聯絡人_姓名"],
+  name: [
+    "name",
+    "full_name",
+    "guest_name",
+    "attendee_name",
+    "姓名",
+    "名字",
+    "聯絡人_姓名",
+    "參加人姓名",
+    "報名人姓名",
+  ],
   firstName: ["first_name", "firstname", "given_name", "名"],
   lastName: ["last_name", "lastname", "family_name", "姓"],
-  email: ["email", "email_address", "guest_email", "電子郵件", "信箱", "聯絡人_email"],
-  phone: ["phone", "phone_number", "mobile", "mobile_phone", "電話", "手機", "聯絡人_手機"],
-  ticket: ["ticket_name", "ticket_type", "ticket", "票種", "票券"],
-  approval: ["approval_status", "status", "guest_status", "報名狀態", "票券付款狀態"],
+  email: [
+    "email",
+    "email_address",
+    "guest_email",
+    "電子郵件",
+    "電子信箱",
+    "信箱",
+    "聯絡人_email",
+  ],
+  phone: [
+    "phone",
+    "phone_number",
+    "mobile",
+    "mobile_phone",
+    "電話",
+    "手機",
+    "手機號碼",
+    "聯絡人_手機",
+  ],
+  ticket: ["ticket_name", "ticket_type", "ticket", "票種", "票券", "票券名稱"],
+  approval: [
+    "approval_status",
+    "status",
+    "guest_status",
+    "報名狀態",
+    "票券狀態",
+    "付款狀態",
+    "票券付款狀態",
+  ],
   qr: [
     "qr_code_url",
     "qrcode_url",
@@ -113,12 +148,28 @@ const FIELD_ALIASES = {
     "ticket_key",
     "qr",
     "報到碼",
+    "報到代碼",
     "qr_code_序號",
   ],
-  checkedAt: ["checked_in_at", "check_in_at", "checkin_at", "check_in_time", "報到時間", "attendance_book"],
-  checked: ["checked_in", "check_in_status", "checkin_status", "已報到"],
-  ticketId: ["ticket_api_id", "ticket_id", "guest_api_id", "guest_id", "id"],
-  alternateScanKeys: ["訂單編號", "報名序號", "檢查碼"],
+  checkedAt: [
+    "checked_in_at",
+    "check_in_at",
+    "checkin_at",
+    "check_in_time",
+    "報到時間",
+    "驗票時間",
+    "attendance_book",
+  ],
+  checked: ["checked_in", "check_in_status", "checkin_status", "已報到", "報到狀態"],
+  ticketId: [
+    "ticket_api_id",
+    "ticket_id",
+    "guest_api_id",
+    "guest_id",
+    "id",
+    "票券編號",
+  ],
+  alternateScanKeys: ["訂單編號", "報名序號", "檢查碼", "報名編號"],
 } as const;
 
 const ELIGIBLE_APPROVAL_STATUSES = new Set([
@@ -127,6 +178,9 @@ const ELIGIBLE_APPROVAL_STATUSES = new Set([
   "going",
   "confirmed",
   "paid",
+  "已付款",
+  "付款完成",
+  "報名成功",
 ]);
 
 export function normalizeHeader(value: string) {
@@ -265,7 +319,7 @@ export function scanKeysFor(rawValue: string) {
 }
 
 function looksChecked(value: string) {
-  return ["true", "yes", "y", "1", "checked", "checked_in", "已報到"].includes(
+  return ["true", "yes", "y", "1", "checked", "checked_in", "已報到", "報到完成"].includes(
     value.trim().toLowerCase(),
   );
 }

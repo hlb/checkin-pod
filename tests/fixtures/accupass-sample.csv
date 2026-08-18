@@ -1,0 +1,4 @@
+﻿票券編號,訂單編號,票券名稱,姓名,電子信箱,手機號碼,付款狀態,報到狀態,報到時間,報到碼,公司
+AP-TICKET-001,AP-ORDER-001,一般票,測試來賓甲,accupass-one@example.com,0912000001,已付款,已報到,2026-08-18T09:10:00+08:00,ACCUPASS-CHECKIN-001,範例公司
+AP-TICKET-002,AP-ORDER-002,貴賓票,測試來賓乙,accupass-two@example.com,0912000002,付款完成,未報到,,,範例公司
+AP-TICKET-003,AP-ORDER-003,一般票,測試來賓丙,accupass-three@example.com,0912000003,已退款,未報到,,ACCUPASS-CHECKIN-003,範例公司

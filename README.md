@@ -1,12 +1,12 @@
 # Checkin Pod｜活動報到輔助機
 
-Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位可以匯入 Luma 或 KKTIX CSV，使用 USB 掃描器或電腦鏡頭完成報到，並在投影畫面顯示即時進度。
+Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位可以匯入 Luma、KKTIX 或 ACCUPASS CSV，使用 USB 掃描器或電腦鏡頭完成報到，並在投影畫面顯示即時進度。
 
 ![Checkin Pod 活動報到輔助機](docs/assets/checkin-pod-event-check-in-assistant.webp)
 
 ## 主要功能
 
-- 匯入 Luma 與 KKTIX CSV 名單。
+- 匯入 Luma、KKTIX 與 ACCUPASS CSV 名單。
 - 支援單機與多機報到模式。
 - 支援 USB 鍵盤模式 QR Code 掃描器。
 - 支援瀏覽器相機掃描。
@@ -93,12 +93,15 @@ npm run dev
 
 ## CSV 匯入
 
-系統會辨識常見 Luma 與 KKTIX 欄位，包括：
+系統會辨識常見 Luma、KKTIX 與 ACCUPASS 欄位，包括：
 
 - 姓名、Email、電話、票種
 - Luma `qr_code_url`、`approval_status`
 - KKTIX QR Code 序號、票券付款狀態、Attendance Book
+- ACCUPASS 姓名、電子信箱、手機號碼、票券名稱、票券編號、訂單編號、付款／報到狀態與報到時間
 - 報名序號、訂單編號與檢查碼
+
+ACCUPASS 公開文件目前未提供固定的 CSV 欄位 schema，也未確認電子票 QR payload 必定等同票券編號。匯入器會把票券編號與訂單編號加入候選掃描鍵；只有 CSV 明確包含 `QR Code`、`報到碼` 或 `報到代碼` 欄位時，才把該欄位內容視為 QR／報到碼。若主辦後台匯出的欄位名稱不同，請先保留原始檔並回報欄位標題以補充相容性。
 
 系統會納入可報到狀態。CSV 檔案上限為 50 MB。完整原始欄位保存在單機 IndexedDB，供畫面設定與匯出使用。伺服器使用每場活動內的 `guest-N` 不透明參加者 ID，只保存報到需要的姓名與管理員選取的顯示欄位；QR Code、票號等專用掃描憑證只在匯入時產生 SHA-256 雜湊，不保存明文。Email 只有在管理員選為顯示欄位時才保存。單筆最小化 JSON 上限為 20 KB。單場活動上限為 10,000 人。
 
@@ -151,7 +154,7 @@ npm run lint
 npm audit --omit=dev
 ```
 
-目前 `npm test` 包含 TypeScript、production build 與 44 項測試。`npm run lint` 已通過 ESLint 與 accessibility 檢查。
+目前 `npm test` 包含 TypeScript、production build 與 45 項測試。`npm run lint` 已通過 ESLint 與 accessibility 檢查。
 
 壓力測試：
 
