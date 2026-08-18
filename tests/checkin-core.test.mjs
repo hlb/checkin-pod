@@ -14,9 +14,10 @@ import {
   scanKeysFor,
   toAttendees,
 } from "../app/checkin-core.ts";
+import { parseAccupassWorkbook } from "../app/roster-import.ts";
 
 const kktixFixtureUrl = new URL("./fixtures/kktix-sample.csv", import.meta.url);
-const accupassFixtureUrl = new URL("./fixtures/accupass-sample.csv", import.meta.url);
+const accupassFixtureUrl = new URL("./fixtures/accupass-sample.xlsx", import.meta.url);
 
 function sampleEvent() {
   const importedAt = "2026-08-07T01:00:00.000Z";
@@ -117,33 +118,50 @@ test("imports KKTIX attendee fields, QR serials, payment status, and attendance 
   assert.equal(scan.outcome.attendee.name, "測試來賓乙");
 });
 
-test("imports conservative ACCUPASS aliases, scan keys, eligibility, and attendance", async () => {
+test("imports the completed-ticket sheet from an ACCUPASS Excel workbook", async () => {
   const importedAt = "2026-08-18T01:00:00.000Z";
-  const parsed = parseCsv(await readFile(accupassFixtureUrl, "utf8"));
+  const fixture = await readFile(accupassFixtureUrl);
+  const parsed = await parseAccupassWorkbook(
+    fixture.buffer.slice(fixture.byteOffset, fixture.byteOffset + fixture.byteLength),
+  );
   const allAttendees = toAttendees(parsed.rows, importedAt);
   const attendees = filterEligibleAttendees(allAttendees);
 
   assert.equal(allAttendees.length, 3);
-  assert.equal(attendees.length, 2);
-  assert.deepEqual(defaultDisplayFields(parsed.headers), ["姓名", "票券名稱", "電子信箱"]);
+  assert.equal(attendees.length, 3);
+  assert.deepEqual(
+    defaultDisplayFields(parsed.headers),
+    ["參加人姓名", "票券細節", "參加人Email"],
+  );
   assert.equal(attendees[0].name, "測試來賓甲");
   assert.equal(attendees[0].email, "accupass-one@example.com");
   assert.equal(attendees[0].phone, "0912000001");
-  assert.equal(attendees[0].ticket, "一般票");
-  assert.equal(attendees[0].approvalStatus, "已付款");
-  assert.equal(attendees[0].qrValue, "ACCUPASS-CHECKIN-001");
-  assert.equal(attendees[0].checkedInAt, "2026-08-18T09:10:00+08:00");
-  assert.ok(attendees[0].scanKeys.includes("accupass-checkin-001"));
+  assert.equal(attendees[0].ticket, "一般票 $0 * 1");
+  assert.equal(attendees[0].qrValue, "AP-TICKET-001");
   assert.ok(attendees[0].scanKeys.includes("ap-ticket-001"));
   assert.ok(attendees[0].scanKeys.includes("ap-order-001"));
-  assert.equal(attendees[1].checkedInAt, null);
-  assert.equal(labelForField("票券名稱"), "票種");
-  assert.equal(labelForField("電子信箱"), "Email");
+  assert.equal(labelForField("票券細節"), "票種");
+  assert.equal(labelForField("參加人Email"), "Email");
 
-  const payload = attendeeForServerImport(attendees[0], ["公司"], 0);
-  assert.deepEqual(payload.original, { 公司: "範例公司" });
-  assert.equal("票券編號" in payload.original, false);
-  assert.equal("報到碼" in payload.original, false);
+  const event = {
+    version: 1,
+    fileName: "accupass.xlsx",
+    importedAt,
+    headers: parsed.headers,
+    attendees,
+    revision: 1,
+  };
+  const firstScan = applyScanToEvent(event, "AP-TICKET-001", "2026-08-18T02:00:00.000Z");
+  const duplicate = applyScanToEvent(firstScan.event, "AP-TICKET-001", "2026-08-18T02:00:01.000Z");
+  const unknown = applyScanToEvent(duplicate.event, "AP-TICKET-999", "2026-08-18T02:00:02.000Z");
+  assert.equal(firstScan.outcome.kind, "success");
+  assert.equal(duplicate.outcome.kind, "duplicate");
+  assert.equal(unknown.outcome.kind, "unknown");
+
+  const payload = attendeeForServerImport(attendees[0], ["表單額外欄位1"], 0);
+  assert.deepEqual(payload.original, { 表單額外欄位1: "範例公司" });
+  assert.equal("票號" in payload.original, false);
+  assert.equal("訂單編號" in payload.original, false);
 });
 
 test("applies consecutive scans to the latest event without losing either arrival", () => {

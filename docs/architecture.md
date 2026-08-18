@@ -7,7 +7,7 @@
 
 ## 1. 系統目的
 
-Checkin Pod 為活動主辦單位提供 CSV 名單匯入、QR Code 報到、多入口協作、即時投影、活動歷史與結果匯出。系統提供兩種操作模式：
+Checkin Pod 為活動主辦單位提供 CSV／ACCUPASS Excel 名單匯入、QR Code 報到、多入口協作、即時投影、活動歷史與結果匯出。系統提供兩種操作模式：
 
 - 單機模式使用一台主要工作站，每筆報到立即寫入 D1。
 - 多機模式使用多個入口工作站，每筆報到立即寫入同一場活動的 D1 資料。
@@ -34,11 +34,11 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 
 | 元件 | 路徑 | 職責 |
 |---|---|---|
-| 管理中控台 | `app/page.tsx` | CSV 匯入、模式選擇、報到、隱私設定、歷史與匯出 |
+| 管理中控台 | `app/page.tsx` | CSV／ACCUPASS Excel 匯入、模式選擇、報到、隱私設定、歷史與匯出 |
 | 報到畫面 | `app/scan/page.tsx` | USB 鍵盤輸入、相機掃描、工作站啟用、即時報到與結果呈現 |
 | 投影畫面 | `app/projection/page.tsx` | 讀取公開 projection feed、繪製星球與 cue |
 | Benchmark | `app/benchmark/` | 顯示已驗證壓力測試數字 |
-| 瀏覽器資料核心 | `app/checkin-core.ts` | CSV parsing、IndexedDB 活動快取、資料最小化與 CSV 安全匯出 |
+| 瀏覽器資料核心 | `app/checkin-core.ts`、`app/roster-import.ts` | CSV／ACCUPASS Excel parsing、IndexedDB 活動快取、資料最小化與 CSV 安全匯出 |
 | 共用 client | `app/shared-checkin.ts` | 即時 scan API、lane session、ordered changes 與分頁復原 |
 | 認證核心 | `app/admin-auth.ts`、`app/lane-auth.ts` | HMAC admin session 與 HttpOnly lane Cookie |
 | Worker gateway | `worker/index.ts` | 管理登入、登出、路徑保護、限流、安全標頭與每日清理排程 |
@@ -55,8 +55,8 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 
 ### 4.1 單機模式
 
-1. 管理員在中控台匯入 CSV。
-2. 瀏覽器解析 CSV，建立 `SavedEvent` 與 `Attendee[]`。
+1. 管理員在中控台匯入 CSV 或 ACCUPASS Excel。
+2. 瀏覽器解析 CSV；ACCUPASS Excel 固定讀取 `票券資訊(已完成)`，再建立 `SavedEvent` 與 `Attendee[]`。
 3. 中控台把報到必要欄位與選定顯示欄位最小化後匯入 D1。
 4. 伺服器建立活動與單機主要 lane，並設定 HttpOnly lane Cookie。
 5. IndexedDB 保存完整原始欄位、掃描鍵、活動連線資料與最新狀態快取。
@@ -65,7 +65,7 @@ D1 是兩種模式的操作資料來源。IndexedDB 保存目前活動快取、�
 8. D1 在同一個 `batch()` transaction 內原子判定成功、重複或未知，並立即寫入 activity。
 9. 中控台透過 ordered changes feed 取得最新狀態。`/projection` 開啟時先從 projection feed 取得完整 snapshot，再依 cursor 取得後續 changes。
 
-完整原始 CSV row 留在管理瀏覽器。D1 使用每場活動內的 `guest-N` 不透明 attendee ID，只保存姓名、管理員選取的顯示欄位與報到狀態。QR Code、票號與其他專用掃描憑證只在匯入時計算 SHA-256，明文不寫入 D1；Email 等同時可作為顯示欄位的資料，只有在管理員選取時才保存。單筆最小化 `original_json` 上限為 20 KB。
+完整原始名單 row 留在管理瀏覽器。D1 使用每場活動內的 `guest-N` 不透明 attendee ID，只保存姓名、管理員選取的顯示欄位與報到狀態。QR Code、票號與其他專用掃描憑證只在匯入時計算 SHA-256，明文不寫入 D1；Email 等同時可作為顯示欄位的資料，只有在管理員選取時才保存。單筆最小化 `original_json` 上限為 20 KB。
 
 舊版 `singleSync` IndexedDB 記錄只用於一次相容遷移。中控台開啟活動時會從 D1 復原名單、建立新的主 lane，並改存 `sharedEvent` 連線。
 
@@ -178,7 +178,7 @@ D1 保存不透明 attendee ID、最小化參加者資料、雜湊 scan keys、�
 |---|---|---|
 | 公開 | benchmark、Event ID、活動名稱、匿名或選定公開名稱、報到時間 | no-store、公開 ID、每場隱私設定 |
 | 內部 | lane 名稱、活動統計、activity cursor | admin 或 lane scope |
-| 個人資料 | 姓名、Email、電話、票種、原始 CSV row | admin scope、最小化 D1、IndexedDB、30 天預設保存 |
+| 個人資料 | 姓名、Email、電話、票種、原始名單 row | admin scope、最小化 D1、IndexedDB、30 天預設保存 |
 | 秘密 | 管理密碼、`SESSION_SECRET`、admin Cookie、lane token / Cookie | environment secret、HttpOnly Cookie、hash at rest |
 
 ## 8. 安全與容量控制
@@ -188,7 +188,7 @@ D1 保存不透明 attendee ID、最小化參加者資料、雜湊 scan keys、�
 - 匯入 chunk：200 attendees。
 - changes page：500 records。
 - roster page：最多 500 attendees。
-- CSV 檔案上限：50 MB，在 `file.text()` 前檢查。
+- CSV／Excel 名單上限：50 MB，在讀取檔案內容前檢查。Excel 只在管理員瀏覽器本機解析。
 - shared API JSON request body 上限：4 MB，依實際 request stream bytes 檢查。
 - 管理登入 body 上限：4 KB，依實際 request stream bytes 檢查。
 - 單一最小化 original row JSON 上限：20 KB。
@@ -238,7 +238,7 @@ D1 保存不透明 attendee ID、最小化參加者資料、雜湊 scan keys、�
 ## 11. 已知限制與剩餘風險
 
 - 公開 projection 仍可由知道網址的人查看 Event ID、活動名稱、總數與報到時間。敏感活動應使用匿名預設，並在前方加入 Cloudflare Access 或其他存取控制。
-- 本機 IndexedDB 保存完整 CSV。使用共用電腦時需要獨立 OS 帳號、磁碟加密與活動後清除資料。
+- 本機 IndexedDB 保存完整名單。使用共用電腦時需要獨立 OS 帳號、磁碟加密與活動後清除資料。
 - Cloudflare Rate Limiting binding 的計數以資料中心為範圍且最終一致。高風險部署應再設定 account-level WAF rate limiting 與告警。
 - `image-size` 2.0.2 的 HEIF、ICNS、JXL parser advisories 沒有 patched release。設定會全域停用這些格式，只接受產品需要的 JPG、PNG 與 WebP 路徑。
 - Vinext 仍為 beta。升級需要重新執行 production build、render tests 與壓力測試。

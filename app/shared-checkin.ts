@@ -153,7 +153,7 @@ async function apiJson<T extends JsonResponse>(input: RequestInfo | URL, init?: 
       event_not_ready: "活動名單尚未準備完成，請稍後再試。",
       event_not_found: "找不到這場活動，請重新匯入名單。",
       attendee_limit_exceeded: `活動最多支援 ${MAX_SHARED_ATTENDEES.toLocaleString()} 位來賓。`,
-      duplicate_scan_key: "名單中有重複的 QR Code 或報到碼，請修正 CSV 後再匯入。",
+      duplicate_scan_key: "名單中有重複的 QR Code、票號或報到碼，請修正名單後再匯入。",
       invalid_payload: "傳送的活動資料格式不正確。",
       deletion_confirmation_mismatch: "Event ID 不正確，活動尚未刪除。",
       lane_not_found: "找不到這個工作站。",

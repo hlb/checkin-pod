@@ -1,12 +1,12 @@
 # Checkin Pod｜活動報到輔助機
 
-Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位可以匯入 Luma、KKTIX 或 ACCUPASS CSV，使用 USB 掃描器或電腦鏡頭完成報到，並在投影畫面顯示即時進度。
+Checkin Pod 是活動現場使用的 QR Code 報到系統。活動主辦單位可以匯入 Luma、KKTIX CSV 或 ACCUPASS Excel，使用 USB 掃描器或電腦鏡頭完成報到，並在投影畫面顯示即時進度。
 
 ![Checkin Pod 活動報到輔助機](docs/assets/checkin-pod-event-check-in-assistant.webp)
 
 ## 主要功能
 
-- 匯入 Luma、KKTIX 與 ACCUPASS CSV 名單。
+- 匯入 Luma、KKTIX CSV 與 ACCUPASS Excel 名單。
 - 支援單機與多機報到模式。
 - 支援 USB 鍵盤模式 QR Code 掃描器。
 - 支援瀏覽器相機掃描。
@@ -91,19 +91,21 @@ npm run dev
 
 中控台為每個入口建立獨立工作站連結。啟用密鑰位於 URL fragment，不會送進 access log 或 Referer。新設備開啟連結後直接從伺服器取得活動資料，不需要本機名單。伺服器交換密鑰後設定 HttpOnly 工作站 Cookie，畫面立即清除網址中的密鑰。D1 在同一個 transaction 內完成條件報到更新與 activity 寫入。每筆請求使用 `requestId` 保證冪等性。工作站可以改名、停用與換發連結。
 
-## CSV 匯入
+## 名單匯入
 
-系統會辨識常見 Luma、KKTIX 與 ACCUPASS 欄位，包括：
+Luma 與 KKTIX 使用 CSV。ACCUPASS 可直接上傳主辦後台匯出的 `.xlsx`，系統固定讀取 `票券資訊(已完成)` 工作表；找不到該工作表時會列出檔案內可用的工作表名稱。
+
+系統會辨識以下欄位：
 
 - 姓名、Email、電話、票種
 - Luma `qr_code_url`、`approval_status`
 - KKTIX QR Code 序號、票券付款狀態、Attendance Book
-- ACCUPASS 姓名、電子信箱、手機號碼、票券名稱、票券編號、訂單編號、付款／報到狀態與報到時間
+- ACCUPASS `票號`、`參加人姓名`、`參加人Email`、`參加人電話`、`票券細節`、`訂單編號`
 - 報名序號、訂單編號與檢查碼
 
-ACCUPASS 公開文件目前未提供固定的 CSV 欄位 schema，也未確認電子票 QR payload 必定等同票券編號。匯入器會把票券編號與訂單編號加入候選掃描鍵；只有 CSV 明確包含 `QR Code`、`報到碼` 或 `報到代碼` 欄位時，才把該欄位內容視為 QR／報到碼。若主辦後台匯出的欄位名稱不同，請先保留原始檔並回報欄位標題以補充相容性。
+ACCUPASS 電子票 QR Code 的內容是 `票號`，因此 `票號` 是主要掃描鍵；`訂單編號` 與 Email 是備援掃描鍵。多張票可能共用訂單編號或 Email，現場主要報到仍應掃描 QR Code。`票券細節` 會完整保留為票種顯示，例如 `資格 $0 * 1`。
 
-系統會納入可報到狀態。CSV 檔案上限為 50 MB。完整原始欄位保存在單機 IndexedDB，供畫面設定與匯出使用。伺服器使用每場活動內的 `guest-N` 不透明參加者 ID，只保存報到需要的姓名與管理員選取的顯示欄位；QR Code、票號等專用掃描憑證只在匯入時產生 SHA-256 雜湊，不保存明文。Email 只有在管理員選為顯示欄位時才保存。單筆最小化 JSON 上限為 20 KB。單場活動上限為 10,000 人。
+系統會納入可報到狀態。CSV 或 Excel 名單上限為 50 MB。Excel 在管理員瀏覽器本機解析，不會整份上傳伺服器。完整原始欄位保存在單機 IndexedDB，供畫面設定與匯出使用。伺服器使用每場活動內的 `guest-N` 不透明參加者 ID，只保存報到需要的姓名與管理員選取的顯示欄位；QR Code、票號等專用掃描憑證只在匯入時產生 SHA-256 雜湊，不保存明文。Email 只有在管理員選為顯示欄位時才保存。單筆最小化 JSON 上限為 20 KB。單場活動上限為 10,000 人。
 
 CSV 匯出會中和 `=`、`+`、`-`、`@` 與控制字元開頭的試算表公式，並保留標準 CSV quoting。
 
@@ -124,7 +126,7 @@ npm run sample:generate
 
 ## 現場操作
 
-1. 匯入 CSV，選擇單機或多機模式。
+1. 匯入 CSV 或 ACCUPASS Excel，選擇單機或多機模式。
 2. 設定來賓畫面要顯示的欄位。
 3. 開啟 `/scan`，使用掃描器或相機完成報到。
 4. 在投影電腦開啟 `/projection`，按「開始投影」。
@@ -185,4 +187,4 @@ npm run stress
 
 本專案採用 [Apache License 2.0](LICENSE)。
 
-Inter 與 Noto Sans TC 使用 SIL Open Font License 1.1。完整資訊請看 [第三方授權聲明](https://github.com/hlb/checkin-pod/blob/main/THIRD_PARTY_NOTICES.md)。
+`read-excel-file` 使用 MIT License；Inter 與 Noto Sans TC 使用 SIL Open Font License 1.1。完整資訊請看 [第三方授權聲明](https://github.com/hlb/checkin-pod/blob/main/THIRD_PARTY_NOTICES.md)。

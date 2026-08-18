@@ -242,7 +242,7 @@ test("wires persistence, scanner, secured projection feed, and event controls", 
   ]);
 
   assert.match(page, /MAX_ATTENDEES = MAX_SHARED_ATTENDEES/);
-  assert.match(page, /MAX_CSV_FILE_SIZE = 50 \* 1024 \* 1024/);
+  assert.match(page, /MAX_ROSTER_FILE_SIZE = 50 \* 1024 \* 1024/);
   assert.match(page, /GUESTS_PER_PAGE = 100/);
   assert.match(page, /新增報到工作站/);
   assert.match(page, /checkin-pod-sample-150\.zip/);

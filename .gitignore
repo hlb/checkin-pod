@@ -46,6 +46,7 @@ yarn-error.log*
 *.tsv
 *.xls
 *.xlsx
+!tests/fixtures/*.xlsx
 *.zip
 
 # Only reviewed synthetic fixtures and generated public samples belong in Git.

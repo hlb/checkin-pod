@@ -23,7 +23,6 @@ import {
   formatTime,
   mutateSavedEvent,
   normalizeHeader,
-  parseCsv,
   readBackgroundImageDataUrl,
   readSavedEvent,
   replaceSavedEvent,
@@ -32,6 +31,7 @@ import {
   writeBackgroundImageDataUrl,
   writeSavedEvent,
 } from "./checkin-core";
+import { parseRosterFile, XLSX_MIME_TYPE } from "./roster-import";
 import type { CheckInMode, ProjectionCueType, ProjectionPrivacy } from "./checkin-core";
 import {
   MAX_SHARED_ATTENDEES,
@@ -75,7 +75,7 @@ type Filter = "all" | "pending" | "arrived";
 
 const MAX_ATTENDEES = MAX_SHARED_ATTENDEES;
 const GUESTS_PER_PAGE = 100;
-const MAX_CSV_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_ROSTER_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_BACKGROUND_FILE_SIZE = 15 * 1024 * 1024;
 const MAX_BACKGROUND_WIDTH = 2560;
 const MAX_BACKGROUND_HEIGHT = 1440;
@@ -338,7 +338,7 @@ export default function Home() {
               await replaceSavedEvent(saved);
             }
           } catch {
-            setError("舊版單機活動無法連接伺服器。請從活動歷史載入，或重新匯入 CSV。");
+            setError("舊版單機活動無法連接伺服器。請從活動歷史載入，或重新匯入名單。");
           }
         }
         setEvent(saved);
@@ -456,7 +456,7 @@ export default function Home() {
       try {
         const current = await readSavedEvent() ?? event;
         if (!current.sharedEvent) {
-          throw new Error("活動尚未連接伺服器。請從活動歷史載入，或重新匯入 CSV。");
+          throw new Error("活動尚未連接伺服器。請從活動歷史載入，或重新匯入名單。");
         }
         const sharedOutcome = await scanSharedEvent(
           current.sharedEvent,
@@ -562,12 +562,15 @@ export default function Home() {
   const importFile = useCallback(
     async (file: File) => {
       setError("");
-      if (!file.name.toLowerCase().endsWith(".csv") && file.type !== "text/csv") {
-        setError("請選擇 Luma 或 KKTIX 匯出的 CSV 檔案。");
+      const lowerName = file.name.toLowerCase();
+      const supported = lowerName.endsWith(".csv") || lowerName.endsWith(".xlsx")
+        || file.type === "text/csv" || file.type === XLSX_MIME_TYPE;
+      if (!supported) {
+        setError("請選擇 Luma／KKTIX CSV，或 ACCUPASS 匯出的 Excel（.xlsx）檔案。");
         return;
       }
-      if (file.size > MAX_CSV_FILE_SIZE) {
-        setError("CSV 檔案上限為 50 MB。請移除報到流程不需要的欄位後再匯入。");
+      if (file.size > MAX_ROSTER_FILE_SIZE) {
+        setError("名單檔案上限為 50 MB。請移除報到流程不需要的欄位後再匯入。");
         return;
       }
       if (event && !window.confirm("匯入新名單會取代目前保存在這台瀏覽器的名單，要繼續嗎？")) {
@@ -577,8 +580,7 @@ export default function Home() {
       setImporting(true);
       setImportProgress(0);
       try {
-        const source = await file.text();
-        const { headers, rows } = parseCsv(source);
+        const { headers, rows } = await parseRosterFile(file);
         const importedAt = new Date().toISOString();
         const parsedAttendees = toAttendees(rows, importedAt);
         const attendees = filterEligibleAttendees(parsedAttendees);
@@ -589,7 +591,7 @@ export default function Home() {
         }
         if (!attendees.some((attendee) => attendee.qrValue)) {
           throw new Error(
-            "找不到 QR Code 欄位。請確認 Luma CSV 包含 qr_code_url，或 KKTIX CSV 包含 QR Code 序號。",
+            "找不到 QR Code／票號欄位。請確認 Luma 包含 qr_code_url、KKTIX 包含 QR Code 序號，或 ACCUPASS Excel 包含票號。",
           );
         }
         const nextEvent: SavedEvent = {
@@ -621,7 +623,7 @@ export default function Home() {
         await refreshEventHistory();
         window.setTimeout(() => scanInputRef.current?.focus(), 80);
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "無法讀取這份 CSV，請確認檔案格式。 ");
+        setError(caught instanceof Error ? caught.message : "無法讀取這份名單，請確認檔案格式。");
       } finally {
         setImporting(false);
         setImportProgress(0);
@@ -708,7 +710,7 @@ export default function Home() {
       });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      const baseName = exportEvent.fileName.replace(/\.csv$/i, "") || "luma-guests";
+      const baseName = exportEvent.fileName.replace(/\.(?:csv|xlsx)$/i, "") || "event-guests";
       link.href = url;
       link.download = `${baseName}_checkin_${compactDate(new Date())}.csv`;
       link.click();
@@ -1130,10 +1132,10 @@ export default function Home() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".csv,text/csv"
+        accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         onChange={handleFileChange}
         className="visually-hidden"
-        aria-label="選擇 Luma 或 KKTIX CSV 檔案"
+        aria-label="選擇 Luma、KKTIX CSV 或 ACCUPASS Excel 檔案"
       />
       <input
         ref={backgroundInputRef}
@@ -1208,10 +1210,10 @@ export default function Home() {
             <p className="eyebrow"><span /> 現場報到，從容開始</p>
             <h1>一掃，就知道<br /><em>誰抵達了。</em></h1>
             <p className="welcome-lead">
-              匯入 Luma 或 KKTIX 活動名單，選擇單機或多機報到。系統預設單機，最多支援 10,000 人。
+              匯入 Luma、KKTIX CSV 或 ACCUPASS Excel 活動名單，選擇單機或多機報到。系統預設單機，最多支援 10,000 人。
             </p>
             <div className="trust-row">
-              <span><b>01</b> 匯入 CSV</span>
+              <span><b>01</b> 匯入名單</span>
               <i />
               <span><b>02</b> 掃描 QR Code</span>
               <i />
@@ -1228,9 +1230,9 @@ export default function Home() {
             onDragLeave={() => setDragging(false)}
             onDrop={handleDrop}
           >
-            <div className="file-glyph" aria-hidden="true"><span>CSV</span></div>
+            <div className="file-glyph" aria-hidden="true"><span>CSV<br />XLSX</span></div>
             <p className="drop-kicker">準備活動名單</p>
-            <h2>{importing ? "正在讀取名單…" : "把 Luma / KKTIX CSV 放到這裡"}</h2>
+            <h2>{importing ? "正在讀取名單…" : "把 CSV / ACCUPASS Excel 放到這裡"}</h2>
             <p>或從電腦選擇一份檔案</p>
             <fieldset className="checkin-mode-picker" disabled={importing}>
               <legend>報到模式</legend>
@@ -1263,7 +1265,7 @@ export default function Home() {
               disabled={importing}
               onClick={() => fileInputRef.current?.click()}
             >
-              {importing ? `準備名單中${importProgress ? ` · ${importProgress}%` : "…"}` : "選擇 CSV 檔案"}
+              {importing ? `準備名單中${importProgress ? ` · ${importProgress}%` : "…"}` : "選擇名單檔案"}
             </button>
             <div className="sample-downloads">
               <button className="sample-link" type="button" onClick={() => downloadSample(150)}>
@@ -1854,7 +1856,7 @@ export default function Home() {
           {!eventHistory.length ? (
             <div className="event-history-empty">
               <strong>{historyLoading ? "正在讀取活動…" : "目前沒有活動紀錄"}</strong>
-              <span>{historyLoading ? "" : "匯入第一份 CSV 後，活動會顯示在這裡。"}</span>
+              <span>{historyLoading ? "" : "匯入第一份名單後，活動會顯示在這裡。"}</span>
             </div>
           ) : null}
         </div>
