@@ -260,7 +260,9 @@ function adminLoginPage(message = "", status = 200, extraHeaders?: HeadersInit, 
   headers.set("cache-control", "no-store, max-age=0");
   headers.set("content-type", "text/html; charset=utf-8");
   headers.set("content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
-  headers.set("referrer-policy", "no-referrer");
+  // Preserve same-origin form provenance so local dev proxies can validate the
+  // login POST, while still withholding the referrer from cross-origin sites.
+  headers.set("referrer-policy", "same-origin");
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "DENY");
   return new Response(html, { status, headers });
@@ -284,7 +286,7 @@ function withSecurityHeaders(response: Response, request: Request) {
       "manifest-src 'self'",
     ].join("; "));
   }
-  headers.set("referrer-policy", "no-referrer");
+  if (!headers.has("referrer-policy")) headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "DENY");
   headers.set("permissions-policy", "camera=(self), microphone=(), geolocation=(), payment=(), usb=(), serial=()");

@@ -132,6 +132,7 @@ test("accepts same-origin browser login metadata when Origin is unavailable", as
   assert.equal(conflictingOriginResponse.status, 403);
 
   const loginPage = await render("/admin");
+  assert.equal(loginPage.headers.get("referrer-policy"), "same-origin");
   const loginHtml = await loginPage.text();
   const csrfToken = loginHtml.match(/name="csrf_token" type="hidden" value="([a-f0-9]+)"/)?.[1] ?? "";
   const csrfCookie = loginPage.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
