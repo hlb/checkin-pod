@@ -110,9 +110,10 @@ test("requires the exact event ID for permanent deletion", () => {
   assert.equal(isEventDeletionConfirmed("event-1", eventDeletionConfirmation("event-2")), false);
 });
 
-test("derives the default event name from the CSV file name", () => {
+test("derives the default event name from CSV and Excel file names", () => {
   assert.equal(defaultEventName("luma-sample-10000.csv"), "luma-sample-10000");
   assert.equal(defaultEventName("活動名單.CSV"), "活動名單");
+  assert.equal(defaultEventName("ACCUPASS 活動名單.xlsx"), "ACCUPASS 活動名單");
   assert.equal(defaultEventName(".csv"), "未命名活動");
 });
 

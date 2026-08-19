@@ -476,7 +476,7 @@ export default function ProjectionPage() {
       <header className="projection-header">
         <div>
           <span className="projection-kicker">CHECKIN POD · LIVE ENERGY WALL</span>
-          <strong>{snapshot?.fileName.replace(/\.csv$/i, "") || "全場能量體"}</strong>
+          <strong>{snapshot?.fileName.replace(/\.(?:csv|xlsx)$/i, "") || "全場能量體"}</strong>
         </div>
         <span className={`projection-connection ${connected ? "is-connected" : ""}`}>
           <i /> {connected ? "現場連線中" : "等待中控台"}

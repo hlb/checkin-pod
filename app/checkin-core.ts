@@ -95,12 +95,36 @@ const WRITE_LOCK_NAME = "checkin-pod-write";
 let fallbackWriteQueue: Promise<void> = Promise.resolve();
 
 const FIELD_ALIASES = {
-  name: ["name", "full_name", "guest_name", "attendee_name", "姓名", "名字", "聯絡人_姓名"],
+  name: ["name", "full_name", "guest_name", "attendee_name", "姓名", "名字", "聯絡人_姓名", "參加人姓名"],
   firstName: ["first_name", "firstname", "given_name", "名"],
   lastName: ["last_name", "lastname", "family_name", "姓"],
-  email: ["email", "email_address", "guest_email", "電子郵件", "信箱", "聯絡人_email"],
-  phone: ["phone", "phone_number", "mobile", "mobile_phone", "電話", "手機", "聯絡人_手機"],
-  ticket: ["ticket_name", "ticket_type", "ticket", "票種", "票券"],
+  email: [
+    "email",
+    "email_address",
+    "guest_email",
+    "電子郵件",
+    "信箱",
+    "聯絡人_email",
+    "參加人email",
+  ],
+  phone: [
+    "phone",
+    "phone_number",
+    "mobile",
+    "mobile_phone",
+    "電話",
+    "手機",
+    "聯絡人_手機",
+    "參加人電話",
+  ],
+  ticket: [
+    "ticket_name",
+    "ticket_type",
+    "ticket",
+    "票種",
+    "票券",
+    "票券細節",
+  ],
   approval: ["approval_status", "status", "guest_status", "報名狀態", "票券付款狀態"],
   qr: [
     "qr_code_url",
@@ -113,11 +137,19 @@ const FIELD_ALIASES = {
     "ticket_key",
     "qr",
     "報到碼",
+    "票號",
     "qr_code_序號",
   ],
   checkedAt: ["checked_in_at", "check_in_at", "checkin_at", "check_in_time", "報到時間", "attendance_book"],
   checked: ["checked_in", "check_in_status", "checkin_status", "已報到"],
-  ticketId: ["ticket_api_id", "ticket_id", "guest_api_id", "guest_id", "id"],
+  ticketId: [
+    "ticket_api_id",
+    "ticket_id",
+    "guest_api_id",
+    "guest_id",
+    "id",
+    "票號",
+  ],
   alternateScanKeys: ["訂單編號", "報名序號", "檢查碼"],
 } as const;
 
@@ -536,7 +568,7 @@ export async function mutateSavedEvent(
 ) {
   const updated = await withEventWriteLock(async () => {
     const current = await readSavedEvent();
-    if (!current) throw new Error("找不到目前的活動名單，請重新匯入 CSV。");
+    if (!current) throw new Error("找不到目前的活動名單，請重新匯入名單。");
     const next = mutate(current);
     const normalized = { ...next, revision: (current.revision ?? 0) + 1 };
     await writeSavedEvent(normalized);

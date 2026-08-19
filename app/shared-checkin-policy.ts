@@ -4,7 +4,7 @@ export const SHARED_IMPORT_CHUNK_SIZE = 200;
 export const SHARED_CHANGE_PAGE_SIZE = 500;
 
 export function defaultEventName(fileName: string) {
-  return fileName.replace(/\.csv$/i, "").trim() || "未命名活動";
+  return fileName.replace(/\.(?:csv|xlsx)$/i, "").trim() || "未命名活動";
 }
 
 export function eventDeletionConfirmation(eventId: string) {

@@ -132,6 +132,7 @@ test("accepts same-origin browser login metadata when Origin is unavailable", as
   assert.equal(conflictingOriginResponse.status, 403);
 
   const loginPage = await render("/admin");
+  assert.equal(loginPage.headers.get("referrer-policy"), "same-origin");
   const loginHtml = await loginPage.text();
   const csrfToken = loginHtml.match(/name="csrf_token" type="hidden" value="([a-f0-9]+)"/)?.[1] ?? "";
   const csrfCookie = loginPage.headers.get("set-cookie")?.split(";", 1)[0] ?? "";
@@ -242,7 +243,7 @@ test("wires persistence, scanner, secured projection feed, and event controls", 
   ]);
 
   assert.match(page, /MAX_ATTENDEES = MAX_SHARED_ATTENDEES/);
-  assert.match(page, /MAX_CSV_FILE_SIZE = 50 \* 1024 \* 1024/);
+  assert.match(page, /MAX_ROSTER_FILE_SIZE = 50 \* 1024 \* 1024/);
   assert.match(page, /GUESTS_PER_PAGE = 100/);
   assert.match(page, /新增報到工作站/);
   assert.match(page, /checkin-pod-sample-150\.zip/);
